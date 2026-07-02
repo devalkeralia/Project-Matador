@@ -139,8 +139,9 @@ opp #1043
 `bankroll`, `kelly_fraction: 0.25`, `min_net_edge: 0.03`, `min_liquidity`, `max_spread`,
 `min_price` (favorite bias, optional), `fee_coefficient: 0.07`, `tours: [ATP, WTA]`,
 `event_tiers: [GrandSlam, Masters1000]`, `series: {atp: KXATPMATCH, wta: <WTA ticker>}`.
-Secrets in `.env`: `KALSHI_KEY_ID`, `KALSHI_PRIVATE_KEY` (RSA PEM), `LIVESCORE_API_KEY`,
-`TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`.
+Secrets in `.env` (gitignored; template in `.env.example`): `KALSHI_KEY_ID`,
+`KALSHI_PRIVATE_KEY_PATH` (path to the gitignored `.pem`), `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`.
+`LIVESCORE_API_KEY` is **v2 only** (not needed for v1).
 
 ## Guardrails / non-goals
 - **No automated order placement — ever.** Signals only; I execute manually on Kalshi.

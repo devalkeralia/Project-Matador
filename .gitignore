@@ -44,3 +44,11 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# --- Windows "downloaded from internet" artifacts ---
+*Zone.Identifier
+
+# --- Credential safety net (keys are sometimes saved as .txt) ---
+*Key*.txt
+*key*.txt
+*RSA*

@@ -30,6 +30,25 @@ Design complete; building **v1**.
   the token in a URL or commit. **Ask before committing or pushing.**
 - **Develop against the Kalshi DEMO environment first** (`external-api.demo.kalshi.co`).
 
+## Development principles (Karpathy)
+
+These govern all work in this repo. They're also in the user's global Claude config, but are
+restated here so they travel with the repo (other machines, collaborators, remote sessions).
+Bias to caution over speed; use judgment on trivial tasks.
+
+1. **Think before coding.** State assumptions explicitly. If a requirement is ambiguous or has
+   multiple readings, stop and ask — don't guess. If a simpler approach exists, say so.
+2. **Simplicity first.** The minimum code that solves the problem — no speculative features, no
+   abstractions for single-use code, no unrequested config/flexibility, no error handling for
+   impossible cases. If 200 lines could be 50, rewrite. (Reinforces the v1-only scope and
+   "statistical baseline first" below — don't gold-plate.)
+3. **Surgical changes.** Touch only what the task needs; match existing style; don't refactor
+   what isn't broken. Flag unrelated dead code rather than deleting it; remove only the orphans
+   your own change creates.
+4. **Goal-driven execution.** Turn each task into a verifiable goal: for a bug, write a failing
+   test that reproduces it, then make it pass; for multi-step work, state a brief plan with
+   verification steps; loop until it's actually verified, not just written.
+
 ## Key design facts (settled — don't re-derive)
 - Kalshi contracts are priced **1–99¢ = implied probability**; back a player = **buy Yes**,
   lay = **buy No** (`yes_sub_title` says which player "Yes" pays out on).

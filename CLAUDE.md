@@ -21,10 +21,13 @@ Design complete; building **v1**.
 - `README.md` — overview + changelog.
 
 ## Hard rules
-- **Never commit secrets or paste them into chat.** All credentials live in `secrets/`
-  (gitignored) and `.env` (gitignored); `.env.example` is the template.
+- **Never commit secrets or paste them into chat.** Save **every** credential into `secrets/`
+  (the whole dir is gitignored) — never leave keys/tokens loose in the repo root. `.env`
+  (gitignored) holds config; `.env.example` is the template.
 - **No automated bet placement.** Signals only; the user trades manually on Kalshi.
-- **Ask before committing or pushing.**
+- **Remote:** code is pushed to the user's **personal GitHub** over HTTPS using the PAT in
+  `secrets/` — never embed the token in the remote URL or a commit. **Ask before committing or
+  pushing.**
 - **Develop against the Kalshi DEMO environment first** (`external-api.demo.kalshi.co`).
 
 ## Key design facts (settled — don't re-derive)

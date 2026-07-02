@@ -25,9 +25,9 @@ Design complete; building **v1**.
   (the whole dir is gitignored) — never leave keys/tokens loose in the repo root. `.env`
   (gitignored) holds config; `.env.example` is the template.
 - **No automated bet placement.** Signals only; the user trades manually on Kalshi.
-- **Remote:** code is pushed to the user's **personal GitHub** over HTTPS using the PAT in
-  `secrets/` — never embed the token in the remote URL or a commit. **Ask before committing or
-  pushing.**
+- **Remote:** `origin` → **https://github.com/devalkeralia/Project-Matador** (private). Auth is
+  via the `gh` CLI (credential helper already configured; PAT lives in `secrets/`) — never embed
+  the token in a URL or commit. **Ask before committing or pushing.**
 - **Develop against the Kalshi DEMO environment first** (`external-api.demo.kalshi.co`).
 
 ## Key design facts (settled — don't re-derive)

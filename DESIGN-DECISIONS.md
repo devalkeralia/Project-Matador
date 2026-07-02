@@ -77,8 +77,10 @@ the flagship in-play edge is unproven on Kalshi.
 
 ## Fair-value model approach (market-agnostic — carried over unchanged)
 
-1. **Pre-match:** surface-weighted Elo per player (from Sackmann history) → per-player
-   serve-point-win probability on the match surface.
+1. **Pre-match (v1):** surface-weighted **match Elo** per player (from Sackmann history) →
+   match-win probability **directly** via the logistic `p = 1/(1 + 10^((Elo_opp − Elo_self)/400))`;
+   no serve model in v1. (Steps 2–3 — serve/return Elo + game→set→match recursion — are the
+   **v2** in-play mechanism.)
 2. **In-play:** point-by-point Markov model → `P(win match | current score)` from the current
    points/games/sets/server, via standard game→set→match recursion. The current score comes
    from the **live-score feed** (Kalshi does not expose granular score via API).
@@ -90,12 +92,14 @@ the flagship in-play edge is unproven on Kalshi.
    - **Net edge** = `(p_model − price) − 0.07 × price × (1 − price)`.
    - Alert when **net edge ≥ 3%** AND live liquidity/spread clears the gate AND (for the pilot)
      the in-play mean-reversion + situational filters agree.
-5. **Staking (¼-Kelly on a binary contract):** `f* = (p_model − price) / (1 − price)`;
-   `stake = ¼ × f* × bankroll`; `contracts = floor(stake / price)`; cap at `max_stake_pct`.
-   - Worked example: p_model 0.60, Yes ask 0.54, bankroll $2,000 → f* = 0.06/0.46 = 0.130 →
-     ¼-Kelly 0.033 → stake ≈ $65 → 120 contracts; fee ≈ $2.09; **net edge ≈ 4.3%** (clears 3%).
+5. **Staking (¼-Kelly on a binary contract):** size on the **net-of-fee** edge —
+   `f* = net_edge / (1 − price)`; `stake = min(¼ × f* × bankroll, max_stake_pct × bankroll)`
+   (cap first); `contracts = floor(stake / price)`. Evaluate both sides (No side:
+   `price = no_ask = 1 − best Yes bid`, `p = 1 − p_model`); skip an empty book or `price > max_price`.
+   - Worked example: p_model 0.60, Yes ask 0.54, bankroll $2,000 → net edge ≈ 4.3% →
+     f* = 0.0426/0.46 = 0.093 → ¼-Kelly 0.023 → stake ≈ $46 → 85 contracts (fee ≈ $1.48).
      At price 0.90 the fee term is ~0.6%, so the same gross edge survives far better — the
-     favorite bias in action.
+     favorite bias in action. (Sizing on gross edge would over-stake ~28%.)
 
 ## Model complexity — statistical baseline first; ML/LLM staged and evidence-gated
 

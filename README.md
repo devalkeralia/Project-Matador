@@ -53,6 +53,11 @@ Start the build: open a fresh session, paste `MASTER-PROMPT.md`, and have Claude
 
 ## Changelog
 
+- **2026-07-02 — Pre-build design review (multi-agent).** Ran an adversarial 5-lens review
+  before building; **49 findings confirmed**. Fixed 2 must-fix contradictions inline (v1
+  Elo→p_model logistic; name-resolution + abstain gate) plus core staking math (net-of-fee Kelly,
+  stake/price caps, No-side, empty-book); captured the rest as phase-tagged action items in
+  `MASTER-PROMPT.md`; full report archived in `PRE-BUILD-REVIEW.md`.
 - **2026-07-02 — GitHub repo + tooling set up.** Created the private repo
   **devalkeralia/Project-Matador** and pushed all commits; consolidated all credentials into the
   gitignored `secrets/` dir (Kalshi key id + RSA key, GitHub PAT); installed & configured `gh`

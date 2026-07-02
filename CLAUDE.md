@@ -10,7 +10,8 @@ trade manually — this bot never places orders.**
 
 ## Status & scope
 Design complete; building **v1**.
-- **v1 = pre-match value alerts only.** Win probability comes from **surface Elo**.
+- **v1 = pre-match value alerts only.** Win probability = surface-weighted **match Elo** →
+  logistic `p = 1/(1+10^((Elo_opp−Elo_self)/400))` (no serve model; serve/return + recursion are v2).
 - **v2 (do NOT build in v1):** in-play mean-reversion, the live-score feed, point-by-point
   Markov repricing, situational-in-play logic. Anything tagged _(v2)_ in the docs is deferred.
 
@@ -18,6 +19,7 @@ Design complete; building **v1**.
 - `MASTER-PROMPT.md` — the build brief (phased plan).
 - `DESIGN-DECISIONS.md` — every decision + rationale.
 - `RESEARCH-KALSHI.md` — Kalshi API / fees / mechanics + the build-time "verify" checklist (§6).
+- `PRE-BUILD-REVIEW.md` — 2026-07-02 design-review findings + action items (resolve as noted in MASTER-PROMPT).
 - `README.md` — overview + changelog.
 
 ## Hard rules
@@ -54,8 +56,9 @@ Bias to caution over speed; use judgment on trivial tasks.
   lay = **buy No** (`yes_sub_title` says which player "Yes" pays out on).
 - **Net-of-fee edge** = `(p_model − price) − 0.07·price·(1−price)`; **alert at ≥ 3%**. Fees peak
   near 50¢ and shrink on favorites — bias toward favorites.
-- **¼-Kelly on a binary contract:** `f* = (p_model − price)/(1 − price)`;
-  `stake = 0.25·f*·bankroll`; `contracts = floor(stake/price)`.
+- **¼-Kelly on a binary contract — size on NET edge:** `f* = net_edge/(1 − price)`;
+  `stake = min(0.25·f*·bankroll, max_stake_pct·bankroll)` (cap first); `contracts = floor(stake/price)`.
+  Evaluate both sides; abstain on no-model / empty book / `price > max_price`.
 - **Model complexity:** statistical baseline first (surface Elo from Jeff Sackmann data).
   **Do NOT reach for ML / gradient-boosting / an LLM predictor** until the baseline's edge is
   measured. Use Ultimate Tennis Statistics / Tennis Abstract only as reference/validation.

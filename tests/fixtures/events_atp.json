@@ -1,0 +1,356 @@
+{
+  "events": [
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04TIABUB",
+      "last_updated_ts": "2026-07-02T19:45:46.335306Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Tiafoe vs Bublik (Jul 4)",
+      "title": "Tiafoe vs Bublik"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04LEHMUN",
+      "last_updated_ts": "2026-07-02T19:45:46.695476Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Lehecka vs Munar (Jul 4)",
+      "title": "Lehecka vs Munar"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04KHACOB",
+      "last_updated_ts": "2026-07-02T18:19:48.238077Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Khachanov vs Cobolli (Jul 4)",
+      "title": "Khachanov vs Cobolli"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04GIRZVE",
+      "last_updated_ts": "2026-07-02T16:43:13.893097Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Giron vs Zverev (Jul 4)",
+      "title": "Giron vs Zverev"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04FRISON",
+      "last_updated_ts": "2026-07-02T15:13:26.809276Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Fritz vs Sonego (Jul 4)",
+      "title": "Fritz vs Sonego"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04DIMBER",
+      "last_updated_ts": "2026-07-02T20:38:21.64998Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Dimitrov vs Berrettini (Jul 4)",
+      "title": "Dimitrov vs Berrettini"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04DESVA",
+      "last_updated_ts": "2026-07-02T15:13:27.208985Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "de Minaur vs Svajda (Jul 4)",
+      "title": "de Minaur vs Svajda"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL04BERFER",
+      "last_updated_ts": "2026-07-02T15:13:27.601143Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Bergs vs Fery (Jul 4)",
+      "title": "Bergs vs Fery"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03STRMED",
+      "last_updated_ts": "2026-07-02T15:13:32.743431Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Struff vs Medvedev (Jul 3)",
+      "title": "Struff vs Medvedev"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03SINBRO",
+      "last_updated_ts": "2026-07-01T15:38:17.191734Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Sinner vs Brooksby (Jul 3)",
+      "title": "Sinner vs Brooksby"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03SAFFON",
+      "last_updated_ts": "2026-07-01T17:38:41.713135Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Safiullin vs Fonseca (Jul 3)",
+      "title": "Safiullin vs Fonseca"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03RINDJO",
+      "last_updated_ts": "2026-07-01T20:44:17.684538Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Rinderknech vs Djokovic (Jul 3)",
+      "title": "Rinderknech vs Djokovic"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03JODMOC",
+      "last_updated_ts": "2026-07-02T15:13:33.023608Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Jodar vs Mochizuki (Jul 3)",
+      "title": "Jodar vs Mochizuki"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03HURPAU",
+      "last_updated_ts": "2026-07-01T12:44:21.046994Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Hurkacz vs Paul (Jul 3)",
+      "title": "Hurkacz vs Paul"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03DAVFUC",
+      "last_updated_ts": "2026-07-01T14:44:20.62439Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Davidovich Fokina vs Fucsovics (Jul 3)",
+      "title": "Davidovich Fokina vs Fucsovics"
+    },
+    {
+      "available_on_brokers": false,
+      "category": "Sports",
+      "collateral_return_type": "MECNET",
+      "event_ticker": "KXATPMATCH-26JUL03AUGZHE",
+      "last_updated_ts": "2026-07-01T20:44:18.047456Z",
+      "mutually_exclusive": true,
+      "product_metadata": {
+        "competition": "Wimbledon Men Singles",
+        "competition_scope": "Game"
+      },
+      "series_ticker": "KXATPMATCH",
+      "settlement_sources": [
+        {
+          "name": "ATP",
+          "url": "https://www.atptour.com/"
+        }
+      ],
+      "strike_period": "",
+      "sub_title": "Auger-Aliassime vs Zheng (Jul 3)",
+      "title": "Auger-Aliassime vs Zheng"
+    }
+  ]
+}

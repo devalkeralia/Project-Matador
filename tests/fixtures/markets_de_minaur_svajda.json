@@ -1,0 +1,111 @@
+{
+  "cursor": "",
+  "markets": [
+    {
+      "can_close_early": true,
+      "close_time": "2026-07-18T10:00:00Z",
+      "created_time": "2026-07-02T15:10:53.424146Z",
+      "custom_strike": {
+        "tennis_competitor": "4d7051e1-dfeb-4b37-8fc0-700b88c23dda"
+      },
+      "early_close_condition": "This market will close and expire after a winner is declared.",
+      "event_ticker": "KXATPMATCH-26JUL04DESVA",
+      "expected_expiration_time": "2026-07-04T13:00:00Z",
+      "expiration_time": "2026-07-18T10:00:00Z",
+      "expiration_value": "",
+      "fractional_trading_enabled": true,
+      "last_price_dollars": "0.8300",
+      "latest_expiration_time": "2026-07-18T10:00:00Z",
+      "liquidity_dollars": "0.0000",
+      "market_type": "binary",
+      "no_ask_dollars": "0.1800",
+      "no_bid_dollars": "0.1700",
+      "no_sub_title": "Alex de Minaur",
+      "notional_value_dollars": "1.0000",
+      "occurrence_datetime": "2026-07-04T13:00:00Z",
+      "open_interest_fp": "335.47",
+      "open_time": "2026-07-02T15:15:00Z",
+      "previous_price_dollars": "0.0000",
+      "previous_yes_ask_dollars": "0.0000",
+      "previous_yes_bid_dollars": "0.0000",
+      "price_level_structure": "linear_cent",
+      "price_ranges": [
+        {
+          "end": "1.0000",
+          "start": "0.0000",
+          "step": "0.0100"
+        }
+      ],
+      "response_price_units": "usd_cent",
+      "result": "",
+      "rules_primary": "If Alex de Minaur wins the de Minaur vs Svajda professional tennis match in the 2026 Wimbledon Men Singles Round Of 32 after a ball has been played, then the market resolves to Yes.",
+      "rules_secondary": "The following market refers to the de Minaur vs Svajda professional tennis match in the 2026 Wimbledon Men Singles Round Of 32 after a ball has been played. If the match does not occur (signaled by a ball being played) due to a player injury, walkover, forfeiture, or any other cancellation (all before the match starts), the market will resolve to a fair price in accordance with the rules. If this match is postponed or delayed, the market will remain open and close after the rescheduled match has finished (within two weeks).",
+      "settlement_timer_seconds": 60,
+      "status": "active",
+      "strike_type": "structured",
+      "ticker": "KXATPMATCH-26JUL04DESVA-DE",
+      "title": "Will Alex de Minaur win the de Minaur vs Svajda: Round Of 32 match?",
+      "updated_time": "2026-07-02T15:15:00.699121Z",
+      "volume_24h_fp": "335.47",
+      "volume_fp": "335.47",
+      "yes_ask_dollars": "0.8300",
+      "yes_ask_size_fp": "16736.36",
+      "yes_bid_dollars": "0.8200",
+      "yes_bid_size_fp": "1147.00",
+      "yes_sub_title": "Alex de Minaur"
+    },
+    {
+      "can_close_early": true,
+      "close_time": "2026-07-18T10:00:00Z",
+      "created_time": "2026-07-02T15:10:53.424146Z",
+      "custom_strike": {
+        "tennis_competitor": "5f58ce8c-7da9-4a7a-be1d-7104dfc1d685"
+      },
+      "early_close_condition": "This market will close and expire after a winner is declared.",
+      "event_ticker": "KXATPMATCH-26JUL04DESVA",
+      "expected_expiration_time": "2026-07-04T13:00:00Z",
+      "expiration_time": "2026-07-18T10:00:00Z",
+      "expiration_value": "",
+      "fractional_trading_enabled": true,
+      "last_price_dollars": "0.1800",
+      "latest_expiration_time": "2026-07-18T10:00:00Z",
+      "liquidity_dollars": "0.0000",
+      "market_type": "binary",
+      "no_ask_dollars": "0.8300",
+      "no_bid_dollars": "0.8200",
+      "no_sub_title": "Zachary Svajda",
+      "notional_value_dollars": "1.0000",
+      "occurrence_datetime": "2026-07-04T13:00:00Z",
+      "open_interest_fp": "2107.40",
+      "open_time": "2026-07-02T15:15:00Z",
+      "previous_price_dollars": "0.0000",
+      "previous_yes_ask_dollars": "0.0000",
+      "previous_yes_bid_dollars": "0.0000",
+      "price_level_structure": "linear_cent",
+      "price_ranges": [
+        {
+          "end": "1.0000",
+          "start": "0.0000",
+          "step": "0.0100"
+        }
+      ],
+      "response_price_units": "usd_cent",
+      "result": "",
+      "rules_primary": "If Zachary Svajda wins the de Minaur vs Svajda professional tennis match in the 2026 Wimbledon Men Singles Round Of 32 after a ball has been played, then the market resolves to Yes.",
+      "rules_secondary": "The following market refers to the de Minaur vs Svajda professional tennis match in the 2026 Wimbledon Men Singles Round Of 32 after a ball has been played. If the match does not occur (signaled by a ball being played) due to a player injury, walkover, forfeiture, or any other cancellation (all before the match starts), the market will resolve to a fair price in accordance with the rules. If this match is postponed or delayed, the market will remain open and close after the rescheduled match has finished (within two weeks).",
+      "settlement_timer_seconds": 60,
+      "status": "active",
+      "strike_type": "structured",
+      "ticker": "KXATPMATCH-26JUL04DESVA-SVA",
+      "title": "Will Zachary Svajda win the de Minaur vs Svajda: Round Of 32 match?",
+      "updated_time": "2026-07-02T15:15:00.699121Z",
+      "volume_24h_fp": "2107.40",
+      "volume_fp": "2107.40",
+      "yes_ask_dollars": "0.1800",
+      "yes_ask_size_fp": "1817.08",
+      "yes_bid_dollars": "0.1700",
+      "yes_bid_size_fp": "8784.93",
+      "yes_sub_title": "Zachary Svajda"
+    }
+  ]
+}

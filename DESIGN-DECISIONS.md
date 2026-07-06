@@ -140,8 +140,9 @@ reminder that a good predictor still isn't automatically market-beating.
 
 **Two distinct tests — don't conflate them:**
 1. **Model calibration** — replay historical matches using only pre-match data (no lookahead);
-   compare model probabilities to actual results. Needs **results only** (Sackmann). Necessary
-   but **not** sufficient.
+   compare model probabilities to actual results with a **reliability curve + Brier score +
+   log-loss** (a "60%" bucket must actually hit ~60%) — fix calibration before trusting any edge
+   number. Needs **results only** (Sackmann). Necessary but **not** sufficient.
 2. **Edge / strategy** — replay history and ask *"what would the bot have flagged (model vs
    price), and would those bets have made money net of fees?"* Needs historical **prices**, not
    just results. **This is what proves we're reading the discrepancy correctly.**
@@ -156,6 +157,9 @@ with two complementary approaches:
   (Pinnacle/Bet365, ~20 yrs). Test whether the model beats a market's closing line over
   thousands of matches. Kalshi ≠ Pinnacle, so it's a proxy — but if the model can't beat
   Pinnacle's close it won't beat anything; if it can, that's promising.
+  **De-vig these odds first** (Shin — `reference/tennis_edge.py:devig_shin`): sportsbook prices
+  carry an overround, so compare `p_model` against the *de-vigged fair* probability, not the raw
+  quote. Kalshi has no vig, so this is a proxy-only step.
 - **Forward CLV paper-testing (Kalshi-specific):** run the bot **log-only** against live Kalshi
   prices — record would-be bets + price, then compare to the **closing price** (CLV) and the
   outcome. The honest Kalshi validation; already supported by the SQLite `outcomes`/CLV schema

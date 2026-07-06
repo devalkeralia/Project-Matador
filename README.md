@@ -8,11 +8,12 @@ places orders.
 
 ## Status
 
-**Phase: Design complete — ready to build v1.** No application code yet, but the design is
-locked, the master prompt is ready, and the repo + credentials + `gh` auth are all set up.
-**v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
+**Phase 1 (data plumbing) complete — 80 tests passing.** Kalshi client + RSA-PSS auth,
+match→ticker resolution, the name-resolution join, the Sackmann loader, and SQLite storage are
+built and tested. Next: **Phase 2** (surface-Elo → `p_model`). **v1 = pre-match value alerts
+only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-02_
+_Last updated: 2026-07-06_
 
 ## What this is
 
@@ -47,12 +48,22 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-Start the build: open a fresh session, paste `MASTER-PROMPT.md`, and have Claude draft the
-**Phase 1** plan (data plumbing) for approval before any code is written. Develop against the
-**Kalshi demo environment** first.
+**Phase 2 — the model:** surface-weighted match Elo → `p_model` via the logistic, plus the
+calibration harness (reliability curve / Brier / log-loss). See `MASTER-PROMPT.md` Phase 2.
+Develop against the **Kalshi demo environment** first.
 
 ## Changelog
 
+- **2026-07-06 — Evaluated `Research/` material; adopted two Phase-2/6 refinements.** Reviewed the
+  two "viable strategy" screenshots (Polymarket weather bots; YES+NO<$1 arb), the "AI trading desk"
+  repo list, and `tennis_bot_spec.md` + `tennis_edge.py`. Verdicts: weather bots = architecture
+  validation only; the arb is **not viable** on Kalshi (per-side fees exceed the gap that only
+  works on fee-free Polymarket, and it needs the automated execution we've ruled out); none of the
+  five repos are relevant (crypto/execution tooling — ccxt has no Kalshi; `rtk-ai/rtk` is a token
+  compressor, not a trading framework). Kept `tennis_edge.py` as the **v2** serve/return Markov
+  reference (`reference/tennis_edge.py` — not wired into v1) and folded two improvements into the
+  docs: (1) **Shin de-vig** the tennis-data.co.uk proxy odds before the edge-vs-prices backtest;
+  (2) **Brier / log-loss / reliability-curve** calibration acceptance for the Elo model.
 - **2026-07-02 — Pre-build design review (multi-agent).** Ran an adversarial 5-lens review
   before building; **49 findings confirmed**. Fixed 2 must-fix contradictions inline (v1
   Elo→p_model logistic; name-resolution + abstain gate) plus core staking math (net-of-fee Kelly,

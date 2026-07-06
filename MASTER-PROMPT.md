@@ -43,6 +43,10 @@ Resolve the rest in the phase noted:
   n = prior matches — also handles cold-start), initial rating (1500), and the surface-blend
   scheme + weights (blend surface Elo with overall; map carpet≈hard, split indoor/outdoor hard).
   Propose in the Phase-2 plan; calibrate against Tennis Abstract's surface-Elo as acceptance.
+- **Calibration acceptance (metrics):** on a held-out chronological split, report a **reliability
+  curve + Brier score + log-loss** — a "60%" bucket must actually win ~60%. Fix calibration
+  before trusting any edge number (a miscalibrated `p_model` makes net-edge fiction). See
+  `Research/tennis_bot_spec.md` §9.
 - Add **match format (Bo3/Bo5 + final-set rule)** as a per-match input; a format-agnostic Elo is
   miscalibrated by several points. Validate calibration **separately** for Bo3 and Bo5.
 - Define the **data-refresh** pipeline (current-year Sackmann + `TML-Database` same-day), cadence,
@@ -72,6 +76,11 @@ Resolve the rest in the phase noted:
 - **Segment the proxy backtest** by tier/round (you only trade liquid Slams/Masters, where
   Pinnacle is sharpest); **exclude/handle** retirements & walkovers (Sackmann `RET`,
   tennis-data `Comment`).
+- **De-vig the proxy odds first:** tennis-data.co.uk Pinnacle/Bet365 prices carry an overround —
+  strip it (**Shin de-vig**, see `reference/tennis_edge.py:devig_shin`) to a fair probability
+  before the model-vs-price comparison, else you measure the model against juiced odds and
+  understate edge. (Kalshi itself has **no vig** — price = probability directly — so this applies
+  **only** to the sportsbook proxy, never the live Kalshi path.)
 - **Reframe 6(b):** "can't beat Pinnacle ⇒ won't beat anything" is false — the binding gate is
   **forward CLV vs the Kalshi close**; beating Pinnacle is sufficient-not-necessary.
 
@@ -252,10 +261,10 @@ Secrets in `.env` (gitignored; template in `.env.example`): `KALSHI_KEY_ID`,
 4. **Telegram bot:** commands, ticker resolution, alert formatting, on-demand flow.
 5. **Persistence + CLV/stats** tracking.
 6. **Backtest / paper-trade** *before* real money (see DESIGN-DECISIONS "Validation &
-   backtesting"): (a) **model vs outcomes** on Sackmann history (calibration, no lookahead);
-   (b) **edge vs prices** — replay against historical closing odds (tennis-data.co.uk as a
-   proxy, since Kalshi's own price history is shallow) to check the discrepancy is real edge net
-   of fees; (c) **forward CLV paper-testing** log-only against live Kalshi prices (the
+   backtesting"): (a) **model vs outcomes** on Sackmann history (calibration — reliability
+   curve/Brier/log-loss — no lookahead); (b) **edge vs prices** — replay against **de-vigged**
+   historical closing odds (tennis-data.co.uk as a proxy, since Kalshi's own price history is
+   shallow) to check the discrepancy is real edge net of fees; (c) **forward CLV paper-testing** log-only against live Kalshi prices (the
    Kalshi-specific proof). The **in-play pilot is not backtestable** (no historical in-play tick
    paths) — validate it only by capturing your own live data going forward. **Go-live gate:
 positive CLV over ~200+ paper bets, net of fees, before real money.**

@@ -139,6 +139,45 @@ The v1 model shipped. Decisions settled during the build:
 - **Edge/staking scaffold** (`matador/edge.py`): pure net-of-fee edge + ¼-Kelly sizing, shared by
   the Phase-3 edge engine and the Phase-6 backtest; formulas unchanged from the design above.
 
+## Validation findings — does p_model beat the market? (2026-07-07)
+
+Before any real money we test edge vs the market (not just calibration vs outcomes). Harness:
+`matador/backtest.py` + `scripts/backtest_vs_bookmaker.py` (vs tennis-data.co.uk closing odds) +
+`scripts/backtest_vs_kalshi.py` (vs Kalshi's own pre-match line, recovered from candlesticks).
+
+- **vs the SHARP bookmaker close — NO edge (robust; n≈5,772 held-out 2025-26).** Model Brier 0.218
+  vs market 0.204; the Brier-optimal blend puts **weight 0.00 on our model** (the close fully
+  subsumes it); flat-stake ROI **−10.6%**, worst on thin players (−17.9%). A results-only Elo does
+  not beat a sharp line — expected.
+- **vs KALSHI's own pre-match line — INCONCLUSIVE.** Kalshi's API exposes only ~5-6 weeks of settled
+  tennis and only ~25% of matches have a usable pre-match candle, so the ~170-match result swings
+  run-to-run (blend weight ~0.1-0.6, ROI ~+1..+14%) — too small/noisy/subset-biased to conclude.
+  (An earlier "+6-14%, promising" read was retracted as not robust.) Whether Kalshi's softer,
+  lower-liquidity lines are beatable can **only** be settled by **forward CLV paper-testing**.
+- **Decision:** do NOT bet real money on v1. The go-live bar stands: positive CLV over ~200+ forward
+  paper bets, net of fees. Next build serves that (Phase 3 edge engine → Phase 4 alerts → log paper
+  bets + CLV; segment CLV by experience to also test the breakout thesis).
+- **Cold-start shrinkage (why `shrinkage_n0=10`).** Thin favorites were measured ~+8pt overconfident
+  vs outcomes; shrinkage calibrates them (keeps a real breakout above average, kills the mirage that
+  would over-size via Kelly) without under-valuing breakouts (n0≥20 overshoots). Overall held-out
+  log-loss is best at n0=0, so **revisit n0=0 vs 10 in Phase 6** via CLV.
+- **Breakout thesis (evaluated).** Hypothesis: markets underprice hot young players → edge. Against
+  the sharp close it is FALSE/inverted — thin/breakout players are our *worst* segment (the market
+  prices them better than our Elo). Unresolved vs Kalshi at the current tiny sample. Revisit via the
+  experience-segmented forward CLV.
+
+### Option evaluations (2026-07-07)
+- **Option 1 — a better Elo (recency/level-weighted, serve-adjusted): low ceiling for beating sharp
+  markets.** The close subsumes our model (blend weight 0), so refinements make us less-wrong, not
+  orthogonally-right. Worth revisiting only to *amplify* a Kalshi edge if forward testing confirms one.
+- **Option 2 — Kalshi-specific softness: the path, but unproven.** Pursue via forward paper-testing.
+- **Reference sources.** *Ultimate Tennis Statistics* (ATP-only, no API, Sackmann-lineage) = a
+  validation benchmark (our ATP Elo cross-check passed: top-15 overlap ~10-11/15, sensible surface
+  splits) and an algorithm reference for later (its recency/level/serve-adjusted Elo). *Jeff
+  Sackmann's Match Charting Project* = shot-by-shot point-level data (~5k+ curated matches, CC
+  BY-NC-SA) — not match results; useless for v1/market-beating, but the best data to calibrate the
+  **v2** serve/return point-by-point Markov model (parked with the TML serve stats).
+
 ## Model complexity — statistical baseline first; ML/LLM staged and evidence-gated
 
 **Decision:** start with the transparent statistical model (surface-weighted Elo →

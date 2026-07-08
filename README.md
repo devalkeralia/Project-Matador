@@ -53,10 +53,18 @@ I trade the signal manually on Kalshi.
 
 **Phase 3 — edge + staking engine:** net-of-fee edge + ¼-Kelly sizing (scaffolded in
 `matador/edge.py`) + the liquidity gate + config. See `MASTER-PROMPT.md` Phase 3. Develop
-against the **Kalshi demo environment** first.
+against the **Kalshi demo environment** first. Note: validation to date shows no pre-match edge
+vs sharp closing lines (Kalshi inconclusive), so Phase 3–6 build toward **forward CLV
+paper-testing** — the real go-live test — not live money.
 
 ## Changelog
 
+- **2026-07-07 — Validation harness + market-edge findings.** Added `matador/backtest.py` +
+  `scripts/backtest_vs_bookmaker.py` / `backtest_vs_kalshi.py`. Finding: `p_model` does **not** beat
+  the sharp bookmaker close (Brier-optimal blend weight 0 on it; −10.6% flat-stake ROI over ~5.8k
+  held-out 2025–26 matches); vs Kalshi's own pre-match line the available sample is too small/noisy
+  to conclude (inconclusive). **No pre-match edge demonstrated yet → do not bet real money;** the
+  go-live bar is forward CLV paper-testing. See DESIGN-DECISIONS.md "Validation findings".
 - **2026-07-07 — Phase 2 (the model) built + calibrated; 123 tests.** Surface-weighted match Elo
   → a **fitted per-format logistic scale** (per tour × best-of, fit by minimizing log-loss on the
   walk-forward train split; <200-sample formats fall back to 400): ATP Bo3≈526 / Bo5≈404, WTA

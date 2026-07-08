@@ -8,12 +8,15 @@ places orders.
 
 ## Status
 
-**Phase 1 (data plumbing) complete — 80 tests passing.** Kalshi client + RSA-PSS auth,
-match→ticker resolution, the name-resolution join, the Sackmann loader, and SQLite storage are
-built and tested. Next: **Phase 2** (surface-Elo → `p_model`). **v1 = pre-match value alerts
-only** (in-play mean-reversion pilot = v2).
+**Phase 2 (the model) complete — 123 tests passing.** Surface-weighted match Elo → a per-tour,
+per-format **fitted** logistic scale → calibrated `p_model` with an abstain gate; the calibration
+harness (reliability curve / Brier / log-loss) beats coin-flip on held-out seasons (ATP Brier
+0.2181, WTA 0.2176). The model artifact (`data/model.json`) is **per tour** (separate ATP/WTA
+ratings + name index + scales). Phase 1 data plumbing (Kalshi client + RSA-PSS auth, match→ticker
+resolution, name-resolution join, storage) is done. Next: **Phase 3** (edge + staking engine).
+**v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-06_
+_Last updated: 2026-07-07_
 
 ## What this is
 
@@ -48,12 +51,24 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-**Phase 2 — the model:** surface-weighted match Elo → `p_model` via the logistic, plus the
-calibration harness (reliability curve / Brier / log-loss). See `MASTER-PROMPT.md` Phase 2.
-Develop against the **Kalshi demo environment** first.
+**Phase 3 — edge + staking engine:** net-of-fee edge + ¼-Kelly sizing (scaffolded in
+`matador/edge.py`) + the liquidity gate + config. See `MASTER-PROMPT.md` Phase 3. Develop
+against the **Kalshi demo environment** first.
 
 ## Changelog
 
+- **2026-07-07 — Phase 2 (the model) built + calibrated; 123 tests.** Surface-weighted match Elo
+  → a **fitted per-format logistic scale** (per tour × best-of, fit by minimizing log-loss on the
+  walk-forward train split; <200-sample formats fall back to 400): ATP Bo3≈526 / Bo5≈404, WTA
+  Bo3≈475 (WTA Bo5 falls back). The fixed /400 now applies **only** to the Elo rating-update
+  expectation, not `p_model`. Walk-forward calibration on the held-out last two seasons beats
+  coin-flip: ATP Brier 0.2181 / log-loss 0.6244, WTA 0.2176 / 0.6232. The model artifact
+  (`data/model.json`) is now **per tour** so an ATP name can't resolve to a WTA player. Added
+  `matador/edge.py` (net-of-fee edge + ¼-Kelly scaffold) and **cold-start shrinkage** (`n0=10`;
+  tempers thin-player overconfidence — n0=0 to be re-evaluated in Phase 6 via CLV). **Data-source swap:**
+  Sackmann's `tennis_atp`/`tennis_wta` went private mid-2025 — both ATP and WTA now from
+  **LuckyLoser91/TennisCourtLog** (live weekly; prep via `scripts/prepare_matches.py`);
+  TML-Database kept as the v2 reference for real ids + serve stats.
 - **2026-07-06 — Evaluated `Research/` material; adopted two Phase-2/6 refinements.** Reviewed the
   two "viable strategy" screenshots (Polymarket weather bots; YES+NO<$1 arb), the "AI trading desk"
   repo list, and `tennis_bot_spec.md` + `tennis_edge.py`. Verdicts: weather bots = architecture

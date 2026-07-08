@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS outcomes (
     pnl REAL,
     clv REAL
 );
+
+-- Dedup lookup: a polling alert loop checks last_opportunity() before re-inserting a
+-- still-standing pre-match edge, so one edge doesn't fire on every poll.
+CREATE INDEX IF NOT EXISTS idx_opportunities_market ON opportunities(market_ticker, side);
 """
 
 _OPPORTUNITY_COLUMNS = (
@@ -91,3 +95,12 @@ def get_opportunity(conn: sqlite3.Connection, opp_id: int) -> sqlite3.Row | None
 
 def recent_opportunities(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM opportunities ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def last_opportunity(conn: sqlite3.Connection, market_ticker: str, side: str) -> sqlite3.Row | None:
+    """Most recent alert logged for this contract + side, or None -- the dedup lookup the
+    alert layer checks before re-inserting the same standing pre-match edge."""
+    return conn.execute(
+        "SELECT * FROM opportunities WHERE market_ticker = ? AND side = ? ORDER BY id DESC LIMIT 1",
+        (market_ticker, side),
+    ).fetchone()

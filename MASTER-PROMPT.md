@@ -49,8 +49,9 @@ Resolve the rest in the phase noted:
   `Research/tennis_bot_spec.md` §9.
 - Add **match format (Bo3/Bo5 + final-set rule)** as a per-match input; a format-agnostic Elo is
   miscalibrated by several points. Validate calibration **separately** for Bo3 and Bo5.
-- Define the **data-refresh** pipeline (current-year Sackmann + `TML-Database` same-day), cadence,
-  and a max-staleness abstain/warn so in-tournament matches aren't priced on weeks-old ratings.
+- Define the **data-refresh** pipeline (`LuckyLoser91/TennisCourtLog` for ATP+WTA — Sackmann's own
+  repos are private; `TML-Database` = v2 serve-stats reference), cadence, and a max-staleness
+  abstain/warn so in-tournament matches aren't priced on weeks-old ratings.
 
 **Phase 3 — edge / liquidity**
 - Liquidity gate: gate on **order-book depth at/below your target ask** (from
@@ -130,7 +131,8 @@ Resolve the rest in the phase noted:
 - **Python 3.11+**, `python-telegram-bot` (long-polling), `httpx`/`requests`, `cryptography`
   (RSA-PSS signing for Kalshi auth), `pandas`, `numpy`, `SQLite` (`sqlalchemy` or stdlib),
   `pydantic` for config, `pytest`.
-- Runs as an **always-on process** on a small VPS. Config via `config.yaml` + `.env` for secrets.
+- Runs as an **always-on process** on a small VPS. Non-secret config in `config.yaml` (template
+  `config.example.yaml`); secrets in `secrets/.env` (template repo-root `.env.example`).
 
 ## Data sources
 1. **Kalshi API** — contract prices, order book, liquidity (the market being judged).
@@ -148,10 +150,14 @@ Resolve the rest in the phase noted:
 2. **Live-score feed** _(v2 — skip in v1)_ — current point/game/set state + server for the Markov model.
    Recommended **api-tennis.com** (`get_livescore`: `event_serve`, `event_game_result`, per-set
    games, `pointbypoint`). Cheap/derived, ~2–5s latency — fine for on-demand checks.
-3. **Jeff Sackmann datasets** (`tennis_atp`, `tennis_wta`; optionally `TML-Database` for same-day
-   results) — model inputs (surface Elo). Load once; refresh on a defined cadence with a
-   max-staleness guard (see action items). **Name-resolution join:** map each Kalshi player name
-   to a Sackmann player via a single canonical key — normalize case/accents, match on surname +
+3. **Match-history datasets** — model inputs (surface Elo). Sackmann's `tennis_atp`/`tennis_wta`
+   went **private mid-2025**; both tours now come from **`LuckyLoser91/TennisCourtLog`**
+   (`tennis_atp/`, `tennis_wta/`; live weekly auto-update; full names, no ids → synthesize a stable
+   id from the normalized name; prep via `scripts/prepare_matches.py`). **`Tennismylife/TML-Database`**
+   is kept as the v2 reference for real ids + serve stats (join by normalized name; it froze at
+   2026-01). Load once; refresh on a defined cadence with a max-staleness guard
+   (see action items). **Name-resolution join:** map each Kalshi player name to a history player
+   via a single canonical key — normalize case/accents, match on surname +
    first initial, disambiguate same-surname players by event date, with a small manual alias
    table for mismatches. Use the **same** canonical key for the Kalshi title match and the Elo
    lookup.
@@ -159,11 +165,13 @@ Resolve the rest in the phase noted:
    NonCommercial license). Mirror UTS's feature design; sanity-check computed Elo/probabilities.
 
 ## Fair-value model (the "true" probability)
-1. **Pre-match (v1):** compute a surface-weighted **match Elo** per player from Sackmann
-   history, then convert **directly** to a match-win probability via the logistic:
-   `p_model = 1 / (1 + 10^((Elo_opp − Elo_self) / 400))`. **No serve model in v1.** (The
-   serve/return-Elo + point-by-point recursion in steps 2–3 is the _(v2)_ mechanism — do not
-   build it for v1.)
+1. **Pre-match (v1):** compute a surface-weighted **match Elo** per player from match history,
+   then convert **directly** to a match-win probability via the logistic
+   `p_model = 1 / (1 + 10^(−diff / scale))`, where `diff = blended_self − blended_opp` and
+   `blended = surface_weight·surface_elo + (1−surface_weight)·overall_elo`. `scale` is **fitted
+   per tour × best-of** (not a fixed 400; the /400 survives only in the Elo rating-update curve).
+   **No serve model in v1.** (The serve/return-Elo + point-by-point recursion in steps 2–3 is the
+   _(v2)_ mechanism — do not build it for v1.)
 2. **In-play** _(v2)_**:** point-by-point Markov model → `P(player wins match | current score)` from the
    current points/games/sets/server (from the live-score feed) via the standard recursive
    game→set→match formulas.
@@ -234,7 +242,7 @@ opp #1043
 `min_price` (favorite floor, optional), `max_price: 0.95` (favorite ceiling),
 `fee_coefficient: 0.07`, `tours: [ATP, WTA]`, `event_tiers: [GrandSlam, Masters1000]`,
 `series: {atp: KXATPMATCH, wta: <WTA ticker>}`.
-Secrets in `.env` (gitignored; template in `.env.example`): `KALSHI_KEY_ID`,
+Secrets in `secrets/.env` (gitignored; template repo-root `.env.example`): `KALSHI_KEY_ID`,
 `KALSHI_PRIVATE_KEY_PATH` (path to the gitignored `.pem`), `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`.
 `LIVESCORE_API_KEY` is **v2 only** (not needed for v1).
 
@@ -248,8 +256,8 @@ Secrets in `.env` (gitignored; template in `.env.example`): `KALSHI_KEY_ID`,
 
 ## Build in phases — plan first, confirm, then implement each
 1. **Data plumbing:** Kalshi auth (RSA signing) + market/order-book fetch + match→ticker
-   mapping; live-score client _(v2)_; load Sackmann data; storage layer. Use the **Kalshi demo
-   environment** for development.
+   mapping; live-score client _(v2)_; load match-history data; storage layer. Use the **Kalshi
+   demo environment** for development.
 2. **Model (v1):** surface-weighted **match Elo → pre-match match-win probability** via the
    logistic (see Fair-value step 1), plus the validation harness — **the statistical baseline;
    do NOT reach for gradient-boosting/NN or an LLM predictor** until the baseline is measured

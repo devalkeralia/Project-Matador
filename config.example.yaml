@@ -18,6 +18,17 @@ max_price: 0.95
 
 fee_coefficient: 0.07
 
+# v1 Elo model hyperparameters. The per-format logistic scales are fitted per tour by
+# scripts/build_ratings.py and stored in data/model.json (not set here).
+elo:
+  initial_rating: 1500.0
+  k_num: 250.0
+  k_shift: 5.0
+  k_pow: 0.4
+  surface_weight: 0.3   # tuned on held-out log-loss (per-surface elo is noisier; weight it less)
+  shrinkage_n0: 10.0    # cold-start shrinkage toward the mean; fit on held-out (tempers thin-player overconfidence without under-valuing breakouts)
+  max_staleness_days: 365
+
 tours: [ATP, WTA]
 event_tiers: [GrandSlam, Masters1000]
 

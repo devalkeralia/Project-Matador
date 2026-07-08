@@ -104,3 +104,16 @@ def test_recent_opportunities_orders_newest_first_and_respects_limit(db):
     top_two = recent_opportunities(db, limit=2)
 
     assert [row["id"] for row in top_two] == list(reversed(ids))[:2]
+
+
+def test_last_opportunity_returns_latest_matching_or_none(db):
+    from matador.storage import last_opportunity
+
+    assert last_opportunity(db, "T-1", "yes") is None  # nothing logged yet
+    make_opportunity(db, market_ticker="T-1", side="yes", price=0.40)
+    make_opportunity(db, market_ticker="T-1", side="yes", price=0.42)
+    make_opportunity(db, market_ticker="T-1", side="no", price=0.60)
+
+    assert last_opportunity(db, "T-1", "yes")["price"] == 0.42  # most recent yes
+    assert last_opportunity(db, "T-1", "no")["price"] == 0.60
+    assert last_opportunity(db, "T-2", "yes") is None  # different market

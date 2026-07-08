@@ -100,3 +100,22 @@ def test_load_real_config_example():
     cfg = load_config("config.example.yaml")
     assert cfg.bankroll == 2000.0
     assert cfg.series.wta == "KXWTAMATCH"  # confirmed via scripts/probe.py
+
+
+def test_config_has_default_artifact_and_db_paths():
+    cfg = Config(**base_kwargs())
+    assert cfg.model_path.endswith("model.json")
+    assert cfg.db_path.endswith(".db")
+
+
+def test_elo_config_rejects_pathological_hyperparams():
+    from matador.config import EloConfig
+
+    with pytest.raises(ValueError):
+        EloConfig(surface_weight=1.5)
+    with pytest.raises(ValueError):
+        EloConfig(k_num=0)          # K numerator must be > 0
+    with pytest.raises(ValueError):
+        EloConfig(k_shift=0)        # n + k_shift is the divisor at n=0 -> would be 0
+    with pytest.raises(ValueError):
+        EloConfig(max_staleness_days=-1)

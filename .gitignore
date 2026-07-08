@@ -48,6 +48,12 @@ logs/
 .DS_Store
 Thumbs.db
 
+# --- Raw research datasets (large binaries; keep Research/*.png,*.md,*.py tracked) ---
+*.zip
+*.url
+Research/Tennis*/
+Research/TennisData*/
+
 # --- Windows "downloaded from internet" artifacts ---
 *Zone.Identifier
 

@@ -1,6 +1,6 @@
 # Design Decisions
 
-_Last updated: 2026-07-02 · Phase: design/planning · Venue: **Kalshi** (pivoted from Betfair 2026-07-02)_
+_Last updated: 2026-07-07 · Phase: 2 done (model built) → next Phase 3 (edge/staking) · Venue: **Kalshi** (pivoted from Betfair 2026-07-02)_
 
 Record of every decision made during the design interview, with rationale. Update this file
 as decisions change or new ones are made. See [`RESEARCH-KALSHI.md`](./RESEARCH-KALSHI.md) for
@@ -13,7 +13,7 @@ the sourced research behind the Kalshi-specific decisions.
 | Edge (priority) | **Pre-match model-vs-market value (primary)** + in-play mean-reversion (**liquidity-gated pilot**) + situational reads |
 | v1 scope | **Pre-match value alerts only**; in-play pilot + live-score feed = **v2** |
 | Market | **Kalshi** — event-contracts exchange (buy Yes / buy No) |
-| Data | Kalshi API (prices/book) + live-score feed (api-tennis.com) + Jeff Sackmann datasets (model) + UTS/Tennis Abstract (reference) |
+| Data | Kalshi API (prices/book) + live-score feed (api-tennis.com) + match history (LuckyLoser91/TennisCourtLog, ATP+WTA — Sackmann went private; TML-Database = v2 serve-stats reference) for the model + UTS/Tennis Abstract (reference) |
 | Coverage | ATP + WTA top events (Grand Slams + Masters/1000), **gated on live liquidity** |
 | Cadence | On-demand (I trigger checks; no continuous polling) |
 | Runtime | Always-on Telegram bot |
@@ -77,9 +77,12 @@ the flagship in-play edge is unproven on Kalshi.
 
 ## Fair-value model approach (market-agnostic — carried over unchanged)
 
-1. **Pre-match (v1):** surface-weighted **match Elo** per player (from Sackmann history) →
-   match-win probability **directly** via the logistic `p = 1/(1 + 10^((Elo_opp − Elo_self)/400))`;
-   no serve model in v1. (Steps 2–3 — serve/return Elo + game→set→match recursion — are the
+1. **Pre-match (v1):** surface-weighted **match Elo** per player →
+   match-win probability **directly** via the logistic `p = 1/(1 + 10^(−diff/scale))`, where
+   `diff = blended_a − blended_b` and `blended = surface_weight·surface_elo + (1−surface_weight)·overall_elo`.
+   `scale` is a **fitted per-format value** (per tour × best-of — see the Phase-2 record), **not**
+   a fixed 400; the /400 is retained only for the Elo rating-update curve (`elo.expected_score`).
+   No serve model in v1. (Steps 2–3 — serve/return Elo + game→set→match recursion — are the
    **v2** in-play mechanism.)
 2. **In-play:** point-by-point Markov model → `P(win match | current score)` from the current
    points/games/sets/server, via standard game→set→match recursion. The current score comes
@@ -100,6 +103,41 @@ the flagship in-play edge is unproven on Kalshi.
      f* = 0.0426/0.46 = 0.093 → ¼-Kelly 0.023 → stake ≈ $46 → 85 contracts (fee ≈ $1.48).
      At price 0.90 the fee term is ~0.6%, so the same gross edge survives far better — the
      favorite bias in action. (Sizing on gross edge would over-stake ~28%.)
+
+## Phase 2 — model built (2026-07-07)
+
+The v1 model shipped. Decisions settled during the build:
+
+- **Fitted per-format logistic scale (not a fixed 400).** `p_model` uses a `scale` fit per tour ×
+  best-of by minimizing log-loss on the walk-forward train split; formats with <200 samples fall
+  back to 400. Fitted values: **ATP Bo3 ≈ 526, Bo5 ≈ 404; WTA Bo3 ≈ 475** (WTA Bo5 falls back to
+  400 — too few women's Bo5 matches). The classic /400 is kept **only** for the Elo rating-update
+  expectation (`elo.expected_score`).
+- **Elo hyperparameters:** initial 1500; decaying `K = 250/(n+5)^0.4`; surfaces {Hard, Clay,
+  Grass} with Carpet→Hard (indoor/outdoor split deferred — source rows carry no reliable indoor
+  flag); `surface_weight = 0.3` (tuned on held-out log-loss); `min_matches = 20`;
+  `max_staleness_days = 365`; `shrinkage_n0 = 10` (below).
+- **Cold-start shrinkage (`shrinkage_n0 = 10`).** Thin ratings keep `n/(n+10)` of their deviation
+  from 1500, so a low-sample favorite isn't over-rated (raw Elo ran ~+8 pts overconfident on thin
+  favorites; measured against held-out outcomes). Fit on held-out: n0=10 removes ~75% of that
+  overconfidence for ~0.4% overall log-loss, and stays on the safe side — n0 ≥ 20 overshoots into
+  *under*-valuing breakouts. This CALIBRATES thin players (keeps a real edge vs the market, kills an
+  overconfidence mirage that would over-size via Kelly) rather than suppressing them. NB: overall
+  log-loss is technically best at n0=0 — **revisit n0=0 vs 10 in Phase 6** via CLV segmented by
+  player experience (does calibrating thin players help or hurt actual betting?).
+- **Per-tour artifact.** `data/model.json` holds separate ratings, name index, and fitted scales
+  for ATP and WTA, so an ATP name can never resolve to a WTA player. Load via
+  `matador.model.artifact.Model.from_artifact(path)`, then
+  `Model.predict(tour, name_a, name_b, surface, best_of, *, as_of=None, max_staleness_days=None)`.
+  Player ids are opaque strings.
+- **Calibration (walk-forward, held-out last 2 seasons = 2025–2026, with shrinkage):** ATP Brier
+  0.2181 / log-loss 0.6244 (Bo5 0.1890 / 0.5566); WTA Brier 0.2176 / log-loss 0.6232 — both beat
+  coin-flip (0.25 / 0.693).
+- **Data-source swap** (Sackmann repos private): both ATP and WTA from `LuckyLoser91/TennisCourtLog`
+  (live weekly); `Tennismylife/TML-Database` kept as the v2 reference for real ids + serve stats —
+  see Data sources below.
+- **Edge/staking scaffold** (`matador/edge.py`): pure net-of-fee edge + ¼-Kelly sizing, shared by
+  the Phase-3 edge engine and the Phase-6 backtest; formulas unchanged from the design above.
 
 ## Model complexity — statistical baseline first; ML/LLM staged and evidence-gated
 
@@ -187,8 +225,13 @@ going forward** and paper-testing — another reason it's a pilot, not the core.
    + current-game points + point-by-point; REST fits on-demand). Alternatives: SportDevs (free
    tier for prototyping), BetsAPI, GoalServe. Note: cheap feeds are derived, ~2–5s latency, no
    SLA — fine for on-demand checks, not latency-sensitive edges.
-3. **Jeff Sackmann datasets** — model inputs (surface Elo, serve/return rates). Consider
-   `Tennismylife/TML-Database` for same-day results.
+3. **Match-history datasets** — model inputs (surface Elo). Jeff Sackmann's `tennis_atp`/
+   `tennis_wta` repos went **private mid-2025**, so both tours are built from
+   **`LuckyLoser91/TennisCourtLog`** (`tennis_atp/`, `tennis_wta/`, CC BY-NC-SA 4.0; live weekly
+   auto-update, 1968–2026; full player names, no ids → we synthesize a stable id from the
+   normalized name). Prep via `scripts/prepare_matches.py`. **`Tennismylife/TML-Database`** is kept
+   as the v2 reference for real ids + serve stats (join by normalized name; it froze at 2026-01, so
+   it is not the live ATP source).
 4. **Ultimate Tennis Statistics + Tennis Abstract** — **reference/validation only** (no API;
    scrape-averse; NonCommercial license). Use to mirror UTS's feature design and sanity-check the
    hand-rolled Elo/probabilities. Tennis Abstract publishes Sackmann's own surface-Elo reports.

@@ -2,9 +2,13 @@ from pathlib import Path
 
 import pandas as pd
 
-# Acquisition (not automated -- run once, refresh cadence is a Phase 2 concern):
-#   git clone --depth 1 https://github.com/JeffSackmann/tennis_atp.git data/tennis_atp
-#   git clone --depth 1 https://github.com/JeffSackmann/tennis_wta.git data/tennis_wta
+# Data sources (Jeff Sackmann's tennis_atp/tennis_wta repos went private mid-2025):
+#   ATP & WTA -> LuckyLoser91/TennisCourtLog (tennis_atp/, tennis_wta/): live, weekly
+#          auto-updated, 1968-2026, full names (ids synthesized from the normalized name).
+#          scripts/prepare_matches.py writes data/tennis_{tour}/{tour}_matches_all.csv.
+#   TML-Database (data/tml_atp/) is kept as the v2 reference for real ids + serve stats
+#          (join by normalized name); it froze at 2026-01, so it is NOT the live ATP source.
+# Both land as {tour}_matches_*.csv below; this loader is source-agnostic.
 
 
 def load_matches(tour: str, data_dir: str | Path, years: list[int] | None = None) -> pd.DataFrame:
@@ -26,6 +30,6 @@ def load_matches(tour: str, data_dir: str | Path, years: list[int] | None = None
         if not paths:
             raise FileNotFoundError(f"no {tour}_matches_*.csv files found under {tour_dir}")
 
-    matches = pd.concat((pd.read_csv(path) for path in paths), ignore_index=True)
+    matches = pd.concat((pd.read_csv(path, low_memory=False) for path in paths), ignore_index=True)
     matches["tourney_date"] = pd.to_datetime(matches["tourney_date"].astype(str), format="%Y%m%d")
     return matches

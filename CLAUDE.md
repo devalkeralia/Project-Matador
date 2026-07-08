@@ -11,7 +11,8 @@ trade manually — this bot never places orders.**
 ## Status & scope
 Design complete; building **v1**.
 - **v1 = pre-match value alerts only.** Win probability = surface-weighted **match Elo** →
-  logistic `p = 1/(1+10^((Elo_opp−Elo_self)/400))` (no serve model; serve/return + recursion are v2).
+  logistic `p = 1/(1+10^(−diff/scale))` where `scale` is **fitted per tour × best-of** (the fixed
+  /400 survives only in the Elo rating-update curve) (no serve model; serve/return + recursion are v2).
 - **v2 (do NOT build in v1):** in-play mean-reversion, the live-score feed, point-by-point
   Markov repricing, situational-in-play logic. Anything tagged _(v2)_ in the docs is deferred.
 
@@ -59,9 +60,12 @@ Bias to caution over speed; use judgment on trivial tasks.
 - **¼-Kelly on a binary contract — size on NET edge:** `f* = net_edge/(1 − price)`;
   `stake = min(0.25·f*·bankroll, max_stake_pct·bankroll)` (cap first); `contracts = floor(stake/price)`.
   Evaluate both sides; abstain on no-model / empty book / `price > max_price`.
-- **Model complexity:** statistical baseline first (surface Elo from Jeff Sackmann data).
-  **Do NOT reach for ML / gradient-boosting / an LLM predictor** until the baseline's edge is
-  measured. Use Ultimate Tennis Statistics / Tennis Abstract only as reference/validation.
+- **Model complexity:** statistical baseline first (surface Elo from match history — ATP & WTA
+  both from `LuckyLoser91/TennisCourtLog`, live weekly; Sackmann's own repos went private
+  mid-2025; `Tennismylife/TML-Database` kept as the v2 reference for real ids + serve stats).
+  **Do NOT reach for ML / gradient-boosting / an LLM predictor**
+  until the baseline's edge is measured. Use Ultimate Tennis Statistics / Tennis Abstract only as
+  reference/validation.
 - **Validation / go-live bar:** backtest model-vs-outcomes + edge-vs-prices (proxy closing odds
   from tennis-data.co.uk) + **forward CLV paper-testing**. Don't bet real money until **CLV is
   positive over ~200+ paper bets, net of fees**.

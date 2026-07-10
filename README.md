@@ -60,6 +60,9 @@ with `scan.py dry-run` on a liquid slate — the current placeholders were set f
 
 ## Changelog
 
+- **2026-07-10 — Phase 4 planned (parked, not built).** Approved, researched plan committed as
+  `PHASE-4-PLAN.md` — a Telegram alert bot (`/check`, `/scan`, `/recent`, `/help`) that reuses the
+  Phase-3 engine and delivers/logs paper opportunities on-demand. Held for later execution.
 - **2026-07-10 — Phase 3 (edge + staking engine) built; 152 tests.** `matador/engine.py` wires
   resolve → `p_model` → net-of-fee edge → ¼-Kelly stake → liquidity/spread gate → deduped
   `prematch_value` opportunity (reusing `edge.py` + `Model.predict`); `matador/tournament.py`

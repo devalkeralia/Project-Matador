@@ -17,6 +17,7 @@ max_spread: 0.05
 max_price: 0.95
 
 fee_coefficient: 0.07
+adverse_gap: 0.15   # flag alerts whose net edge exceeds this for manual "recent news?" scrutiny
 
 # v1 Elo model hyperparameters. The per-format logistic scales are fitted per tour by
 # scripts/build_ratings.py and stored in data/model.json (not set here).
@@ -30,8 +31,6 @@ elo:
   max_staleness_days: 365
 
 tours: [ATP, WTA]
-event_tiers: [GrandSlam, Masters1000]
-
 series:
   atp: KXATPMATCH
   wta: KXWTAMATCH   # confirmed via scripts/probe.py (2026-07-02)

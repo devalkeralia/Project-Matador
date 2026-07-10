@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     event TEXT,
     match TEXT,
     market_ticker TEXT NOT NULL,
+    event_ticker TEXT,
     side TEXT NOT NULL CHECK (side IN ('yes', 'no')),
     price REAL NOT NULL,
     p_model REAL NOT NULL,
@@ -16,6 +17,8 @@ CREATE TABLE IF NOT EXISTS opportunities (
     contracts INTEGER,
     liquidity REAL,
     trigger_reason TEXT CHECK (trigger_reason IN ('prematch_value', 'inplay_meanrev', 'situational')),
+    occurrence_datetime TEXT,   -- scheduled match time; Phase 5/6 uses it to fetch the closing line for CLV
+    flagged INTEGER DEFAULT 0,  -- adverse-selection: net edge >= adverse_gap (possible late news)
     score_state TEXT
 );
 
@@ -40,6 +43,7 @@ _OPPORTUNITY_COLUMNS = (
     "event",
     "match",
     "market_ticker",
+    "event_ticker",
     "side",
     "price",
     "p_model",
@@ -48,6 +52,8 @@ _OPPORTUNITY_COLUMNS = (
     "contracts",
     "liquidity",
     "trigger_reason",
+    "occurrence_datetime",
+    "flagged",
     "score_state",
 )
 

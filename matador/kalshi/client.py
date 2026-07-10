@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -43,6 +44,9 @@ class MatchResolution:
     yes_sub_title: str
     no_sub_title: str
     yes_player_key: str  # canonical_key of whichever player this market's Yes side pays out on
+    opponent: str | None = None  # the OTHER competitor's full name (a Kalshi market's no_sub_title is the same player as yes_sub_title, so the opponent comes from the sibling market)
+    competition: str | None = None  # event product_metadata.competition, e.g. "Wimbledon Men Singles"
+    occurrence_datetime: str | None = None  # the chosen market's scheduled match datetime (ISO)
 
 
 def _occurrence_date(market: Market) -> date | None:
@@ -81,9 +85,14 @@ class KalshiClient:
             if self._signer is None:
                 raise RuntimeError("authed request requires a signer")
             headers = self._signer.headers(method, self._api_prefix + path)
-        response = self._client.request(method, path, params=params, headers=headers)
-        response.raise_for_status()
-        return response
+        for attempt in range(5):
+            response = self._client.request(method, path, params=params, headers=headers)
+            if response.status_code in (429, 503) and attempt < 4:
+                time.sleep(0.5 * 2 ** attempt)  # backoff on rate-limit / transient unavailability
+                continue
+            response.raise_for_status()
+            return response
+        return response  # unreachable: the final attempt returns or raises above
 
     def get_markets(
         self,
@@ -190,6 +199,7 @@ class KalshiClient:
         if market is None:
             return None
 
+        opponent_market = next((m for m in markets if m.ticker != market.ticker), None)
         return MatchResolution(
             event_ticker=event["event_ticker"],
             market_ticker=market.ticker,
@@ -197,6 +207,9 @@ class KalshiClient:
             yes_sub_title=market.yes_sub_title,
             no_sub_title=market.no_sub_title,
             yes_player_key=canonical_key(market.yes_sub_title),
+            opponent=opponent_market.yes_sub_title if opponent_market else None,
+            competition=(event.get("product_metadata") or {}).get("competition"),
+            occurrence_datetime=market.occurrence_datetime,
         )
 
     def _event_occurs_on(self, event: dict, event_date: date) -> bool:

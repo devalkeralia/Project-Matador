@@ -63,8 +63,8 @@ class Config(BaseModel):
     min_price: float | None = None
     max_price: float = 0.95
     fee_coefficient: float = 0.07
+    adverse_gap: float = 0.15  # flag alerts whose net edge exceeds this for manual "recent news?" scrutiny (late injury/withdrawal the Elo can't see)
     tours: list[str] = Field(default_factory=lambda: ["ATP", "WTA"])
-    event_tiers: list[str] = Field(default_factory=lambda: ["GrandSlam", "Masters1000"])
     series: SeriesConfig = Field(default_factory=SeriesConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
     kalshi_base_url: str = "https://external-api.demo.kalshi.co/trade-api/v2"
@@ -85,7 +85,7 @@ class Config(BaseModel):
             raise ValueError("must be in (0, 1]")
         return v
 
-    @field_validator("min_net_edge", "min_matches", "min_liquidity", "max_spread", "fee_coefficient")
+    @field_validator("min_net_edge", "min_matches", "min_liquidity", "max_spread", "fee_coefficient", "adverse_gap")
     @classmethod
     def _nonnegative(cls, v: float) -> float:
         if v < 0:

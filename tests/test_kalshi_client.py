@@ -131,3 +131,37 @@ def test_check_auth_without_signer_raises():
     with make_client(handler, signer=None) as client:
         with pytest.raises(RuntimeError):
             client.check_auth()
+
+
+def test_request_retries_on_429_then_succeeds(monkeypatch):
+    import matador.kalshi.client as kc
+    monkeypatch.setattr(kc.time, "sleep", lambda *_: None)  # no real backoff in tests
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) < 3:
+            return httpx.Response(429, json={"error": "rate limited"})
+        return httpx.Response(200, json={"market": load_fixture("market_single_liquid.json")})
+
+    with make_client(handler) as client:
+        market = client.get_market(TICKER)
+
+    assert market.ticker == TICKER
+    assert len(calls) == 3  # 429, 429, 200
+
+
+def test_request_gives_up_after_exhausting_retries(monkeypatch):
+    import matador.kalshi.client as kc
+    monkeypatch.setattr(kc.time, "sleep", lambda *_: None)
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, json={"error": "unavailable"})
+
+    with make_client(handler) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            client.get_market(TICKER)
+
+    assert len(calls) == 5  # 5 attempts, then raise

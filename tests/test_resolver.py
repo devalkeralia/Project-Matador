@@ -41,6 +41,10 @@ def test_resolve_match_finds_the_right_event_and_market():
     assert resolution.market_ticker == DIM_TICKER
     assert resolution.yes_sub_title == "Grigor Dimitrov"
     assert resolution.yes_player_key == "dimitrov_g"
+    # opponent comes from the SIBLING market (a market's own no_sub_title is the same player)
+    assert resolution.opponent == "Matteo Berrettini"
+    assert resolution.competition == "Wimbledon Men Singles"
+    assert resolution.occurrence_datetime is not None and resolution.occurrence_datetime.startswith("2026-07-04")
 
 
 def test_resolve_match_is_order_independent():

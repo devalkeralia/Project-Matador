@@ -8,15 +8,16 @@ places orders.
 
 ## Status
 
-**Phase 2 (the model) complete — 123 tests passing.** Surface-weighted match Elo → a per-tour,
-per-format **fitted** logistic scale → calibrated `p_model` with an abstain gate; the calibration
-harness (reliability curve / Brier / log-loss) beats coin-flip on held-out seasons (ATP Brier
-0.2181, WTA 0.2176). The model artifact (`data/model.json`) is **per tour** (separate ATP/WTA
-ratings + name index + scales). Phase 1 data plumbing (Kalshi client + RSA-PSS auth, match→ticker
-resolution, name-resolution join, storage) is done. Next: **Phase 3** (edge + staking engine).
-**v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
+**Phase 3 (edge + staking engine) built — 141 tests passing.** On-demand engine
+(`matador/engine.py` + `scripts/scan.py`) that reprices a live Kalshi match, computes net-of-fee
+edge, sizes a ¼-Kelly stake, applies a liquidity/spread gate, and **logs** a `prematch_value`
+opportunity — paper only, **never places orders**. Reads Kalshi **production** market data
+(read-only). Phases 1 (data plumbing) and 2 (per-tour surface-Elo model → fitted logistic →
+calibrated `p_model`; ATP Brier 0.2181, WTA 0.2176) are done. Next: **Phase 4** (Telegram alerts),
+building toward **forward CLV paper-testing** (the go-live bar). **v1 = pre-match value alerts
+only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-07_
+_Last updated: 2026-07-10_
 
 ## What this is
 
@@ -51,14 +52,23 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-**Phase 3 — edge + staking engine:** net-of-fee edge + ¼-Kelly sizing (scaffolded in
-`matador/edge.py`) + the liquidity gate + config. See `MASTER-PROMPT.md` Phase 3. Develop
-against the **Kalshi demo environment** first. Note: validation to date shows no pre-match edge
-vs sharp closing lines (Kalshi inconclusive), so Phase 3–6 build toward **forward CLV
-paper-testing** — the real go-live test — not live money.
+**Phase 4 — Telegram alerts:** deliver the Phase-3 engine's qualifying opportunities to Telegram
+(`python-telegram-bot`), on-demand. See `MASTER-PROMPT.md` Phase 4. Then Phases 5–6 log
+CLV/outcomes for **forward CLV paper-testing** — the real go-live test, not live money. (Phase 3
+reads Kalshi production; before relying on the liquidity gate, calibrate `min_liquidity`/`max_spread`
+with `scan.py dry-run` on a liquid slate — the current placeholders were set from a thin field.)
 
 ## Changelog
 
+- **2026-07-10 — Phase 3 (edge + staking engine) built; 152 tests.** `matador/engine.py` wires
+  resolve → `p_model` → net-of-fee edge → ¼-Kelly stake → liquidity/spread gate → deduped
+  `prematch_value` opportunity (reusing `edge.py` + `Model.predict`); `matador/tournament.py`
+  derives surface/best-of from Kalshi `product_metadata.competition`; `scripts/scan.py` adds
+  `check`/`scan`/`dry-run` reading Kalshi **production** market data (read-only, retry/backoff on
+  429). Paper only — never places orders. The opportunities log carries CLV fields (event_ticker,
+  occurrence_datetime, flagged) that Phase 5/6 needs to fetch closing lines. Verified live:
+  correctly resolves markets and abstains on unmodellable players; alert/log path + model
+  orientation unit-tested (pre-commit fan-out review applied).
 - **2026-07-07 — Validation harness + market-edge findings.** Added `matador/backtest.py` +
   `scripts/backtest_vs_bookmaker.py` / `backtest_vs_kalshi.py`. Finding: `p_model` does **not** beat
   the sharp bookmaker close (Brier-optimal blend weight 0 on it; −10.6% flat-stake ROI over ~5.8k

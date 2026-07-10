@@ -1,12 +1,23 @@
 import pandas as pd
 import pytest
 
-from matador.backtest import de_vig, replay_predictions, roi_by_experience, sharpness
+from matador.backtest import de_vig, replay_predictions, roi_by_experience, sharpness, tennisdata_key
+from matador.names import canonical_key
 
 
 def test_de_vig_two_way():
     assert de_vig(2.0, 2.0) == pytest.approx(0.5)
     assert de_vig(1.5, 3.0) == pytest.approx(2 / 3)  # iw=.667,il=.333 -> .667
+
+
+def test_tennisdata_key_matches_canonical_key_incl_hyphen_apostrophe():
+    assert tennisdata_key("Sinner J.") == "sinner_j"
+    assert tennisdata_key("Auger-Aliassime F.") == "auger_aliassime_f"      # hyphen folded (was dropped)
+    assert tennisdata_key("O'Connell C.") == "oconnell_c"                    # apostrophe folded
+    assert tennisdata_key("Davidovich Fokina A.") == "davidovich_fokina_a"   # compound surname
+    # must equal canonical_key of the full name so the odds join lines up
+    assert tennisdata_key("Auger-Aliassime F.") == canonical_key("Felix Auger-Aliassime")
+    assert tennisdata_key("Davidovich Fokina A.") == canonical_key("Alejandro Davidovich Fokina")
 
 
 def test_sharpness_identical_model_and_market():

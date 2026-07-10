@@ -21,10 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from matador.backtest import de_vig, replay_predictions, roi_by_experience, sharpness  # noqa: E402
+from matador.backtest import de_vig, replay_predictions, roi_by_experience, sharpness, tennisdata_key  # noqa: E402
 from matador.config import load_config  # noqa: E402
 from matador.model.elo import KFactor  # noqa: E402
-from matador.names import normalize  # noqa: E402
 from matador.sackmann import load_matches  # noqa: E402
 
 DATA_DIR = "data"
@@ -53,12 +52,6 @@ def _fetch_odds(tour: str, year: int) -> Path | None:
     return None
 
 
-def _td_key(name: str) -> str:
-    """tennis-data 'Sinner J.' / 'Auger-Aliassime F.' -> canonical_key 'sinner_j' / 'auger_aliassime_f'."""
-    toks = normalize(name).split()
-    return "_".join(toks) if len(toks) < 2 else "_".join(toks[:-1]) + "_" + toks[-1][0]
-
-
 def _market_lookup(tour: str, years: range) -> dict:
     """(frozenset(winner_key, loser_key)) -> list of (date, p_market_for_winner, winner_odds).
     Keeps de-vigged prob (for the edge decision) AND the actual vigged winner odds (for P&L)."""
@@ -71,7 +64,7 @@ def _market_lookup(tour: str, years: range) -> dict:
         if "AvgW" not in df.columns:
             continue
         for r in df.dropna(subset=["AvgW", "AvgL", "Winner", "Loser", "Date"]).itertuples(index=False):
-            key = frozenset({_td_key(r.Winner), _td_key(r.Loser)})
+            key = frozenset({tennisdata_key(r.Winner), tennisdata_key(r.Loser)})
             mkt.setdefault(key, []).append((pd.Timestamp(r.Date), de_vig(float(r.AvgW), float(r.AvgL)), float(r.AvgW)))
     return mkt
 

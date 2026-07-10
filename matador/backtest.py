@@ -14,7 +14,7 @@ import pandas as pd
 
 from matador.model.elo import KFactor, RatingBook, prepare_matches
 from matador.model.probability import blended_rating, prob_from_diff
-from matador.names import canonical_key
+from matador.names import _surname_to_key, canonical_key, normalize
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,17 @@ def de_vig(odds_w: float, odds_l: float) -> float:
     """Two-way de-vig of decimal odds -> the market's implied P(winner)."""
     iw, il = 1.0 / odds_w, 1.0 / odds_l
     return iw / (iw + il)
+
+
+def tennisdata_key(name: str) -> str:
+    """tennis-data.co.uk 'Sinner J.' / 'Auger-Aliassime F.' -> the canonical_key surname_initial
+    ('sinner_j' / 'auger_aliassime_f'), matching matador.names.canonical_key so the odds join lines
+    up. Surnames go through _surname_to_key, which folds hyphens/apostrophes/spaces -- without it,
+    hyphenated names (every Auger-Aliassime match) silently fail the join."""
+    toks = normalize(name).split()
+    if len(toks) < 2:
+        return _surname_to_key(" ".join(toks))
+    return _surname_to_key(" ".join(toks[:-1])) + "_" + toks[-1][0]
 
 
 def sharpness(model_p, market_p) -> dict:

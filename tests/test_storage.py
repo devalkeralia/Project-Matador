@@ -20,6 +20,7 @@ def make_opportunity(conn, **overrides):
         event="Wimbledon",
         match="Dimitrov vs Berrettini",
         market_ticker="KXATPMATCH-26JUL04DIMBER-DIM",
+        market_player="Grigor Dimitrov",
         side="yes",
         price=0.42,
         p_model=0.50,

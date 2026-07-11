@@ -292,6 +292,71 @@ going forward** and paper-testing — another reason it's a pilot, not the core.
 - **Build-time API verification.** Base URLs, order endpoint, fee coefficient, field names — see
   RESEARCH doc §6.
 
+## Kalshi market structure — Grand Slam finals (Phase 4.5, 2026-07-10)
+
+Verified against live Kalshi during Wimbledon 2026. Kalshi lists tennis in **two shapes**, and the
+bot must know both:
+
+- **Head-to-head (H2H)** — series `KXATPMATCH`/`KXWTAMATCH`, one event per match, two markets
+  (one per player), title `"A vs B"`. This is the bot's primary path. **2026 Slam per-round matches
+  use this same shape** (e.g. `"Sinner vs Djokovic"`, competition `"Wimbledon Men Singles"` →
+  `tournament_context` yields Grass/Bo5), so they were already handled. *(The 2025 `"X or Y
+  advances?"` title format is NOT parsed — a documented, monitored gap; re-add a title branch in
+  `names.keys_from_title` only if Kalshi reverts to it.)*
+- **Tournament-outright** — series `KXATP`/`KXWTA` ("Men's/Women's Tournament Winner"), one event
+  per tournament, one market per player ("will X win the title"). A **Grand Slam final is listed
+  ONLY here**, not as an H2H. Decision: once the field is down to two, exactly two contracts stay
+  `active` and "X wins the title" ≡ "X beats Y in the final", so the active market's own book **is**
+  the H2H book. `client.resolve_outright_final` / `engine.scan_outright_finals` therefore treat an
+  open outright event as a match **iff exactly two markets are `active`**; a full-field futures
+  market (many active, e.g. the US Open a month out) is skipped. `/check` falls back to the outright
+  series when no H2H market exists; `/scan` sweeps finals too.
+
+**Robust going forward:** the code keys off the stable *series* ticker + the structural "2 active"
+rule, never a per-event ticker (`KXATP-26WIM` etc.), so it generalises to every Slam and to any
+tournament final. Confirmed live against **both** Wimbledon 2026 finals — `KXATP` (Sinner–Zverev)
+and `KXWTA` (Muchova–Noskova); `/find` surfaced them as the only model-priceable open matches.
+
+## Open items & deferred work (as of Phase 4.5, 2026-07-10)
+
+Phases 1–4.5 are built (data plumbing → surface-Elo model → edge/staking engine → Telegram bot +
+Grand Slam markets). What's left, by category:
+
+**Next up — Phase 5 (persistence + CLV):**
+- `/result <opp_id> <win|loss> <fill_price> [contracts]` and `/stats` (`storage.record_outcome`
+  already exists; the stored `occurrence_datetime` + `event_ticker` are the hooks).
+- CLV capture: closing price at **scheduled match start** (a single settled-market read, exempt
+  from the no-poll rule) — this is the go-live metric, not settlement.
+
+**Validation / go-live gate (binding):**
+- **A pre-match edge is NOT yet demonstrated** — `p_model` does not beat the sharp bookmaker close
+  (Brier-optimal blend weight 0; ~−10.6% flat ROI on held-out). **Do not bet real money.**
+- Go-live bar: **positive forward CLV over ~200+ paper bets on Kalshi**, net of fees.
+- **Liquidity gate thresholds** (`min_liquidity`, `max_spread`) are placeholders set from a thin
+  post-Wimbledon field — recalibrate via `scan.py dry-run` on a liquid Masters/Slam slate.
+- Re-evaluate cold-start shrinkage `n0` (0 vs 10) via CLV segmented by player match-count.
+
+**Deferred features:**
+- `/settings` (view/update thresholds + bankroll at runtime) — later.
+- `/watch` + in-play mean-reversion + the live-score feed (api-tennis.com) — **v2**.
+- Limit-price / VWAP "≤55¢" alert line (log the realizable fill, not top-of-book) — deferred Phase-3.
+- Aggregate open-exposure cap across `/scan` alerts — nice-to-have.
+
+**Monitored gaps / known limitations:**
+- Slam per-round **"X or Y advances?"** title format (2025-style) is not parsed; 2026 uses "A vs B"
+  so it's dead code today — re-add a branch in `names.keys_from_title` only if Kalshi reverts.
+- **Name resolution** misses two-forename / transliterated names (e.g. Pierre-Hugues Herbert,
+  Marc-Andrea Hüsler) — needs an id-join or `names.ALIASES` entries.
+- `/find` ranks by **Elo strength** (a proxy — no official ATP/WTA rankings are ingested); a
+  liquidity or edge sort could be added later.
+- The **outright→H2H** equivalence holds **only at the final** (two active contracts); earlier Slam
+  rounds rely on the `KXATPMATCH` per-round markets (already handled).
+
+**Ops:**
+- **VPS deployment** (always-on process) — the user runs it; no auto-restart/watchdog yet.
+- Refresh `data/model.json` (from LuckyLoser91, live weekly) before any live paper run; the
+  365-day max-staleness gate already guards against pricing on stale ratings.
+
 ## Non-goals / guardrails
 
 - **No automated bet placement — ever.** Signals only; I execute manually on Kalshi.

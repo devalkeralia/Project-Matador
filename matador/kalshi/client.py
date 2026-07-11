@@ -215,3 +215,42 @@ class KalshiClient:
     def _event_occurs_on(self, event: dict, event_date: date) -> bool:
         markets = self.get_markets(event_ticker=event["event_ticker"])
         return any(_occurrence_date(m) == event_date for m in markets)
+
+    def resolve_outright_final(
+        self,
+        outright_series: str,
+        player_a: str,
+        player_b: str,
+    ) -> MatchResolution | None:
+        """Resolve a match that Kalshi lists only as a tournament-OUTRIGHT market (series
+        KXATP/KXWTA), e.g. a Grand Slam final -- not as a head-to-head.
+
+        A tournament-winner event has one market per player ("will X win the title"). Once the
+        field is down to the last two, exactly two markets stay `active` (the rest settle to No),
+        and "X wins the title" == "X beats Y in the final" -- so that active market's own book IS
+        the head-to-head book. Treat an open outright event as a match ONLY when exactly two
+        markets are active AND they are the two requested players; a full-field futures market
+        (many actives) is not an H2H and is skipped.
+        """
+        wanted = {surname_key(canonical_key(player_a)), surname_key(canonical_key(player_b))}
+        for event in self.get_events(outright_series, status="open"):
+            active = [m for m in self.get_markets(event_ticker=event["event_ticker"]) if m.status == "active"]
+            if len(active) != 2:
+                continue  # only a final (two left) collapses the outright to a head-to-head
+            if {surname_key(canonical_key(m.yes_sub_title)) for m in active} != wanted:
+                continue
+            surname_a = surname_key(canonical_key(player_a))
+            market = next((m for m in active if surname_key(canonical_key(m.yes_sub_title)) == surname_a), active[0])
+            opponent = next(m for m in active if m.ticker != market.ticker)
+            return MatchResolution(
+                event_ticker=event["event_ticker"],
+                market_ticker=market.ticker,
+                title=event.get("title", ""),
+                yes_sub_title=market.yes_sub_title,
+                no_sub_title=market.no_sub_title,
+                yes_player_key=canonical_key(market.yes_sub_title),
+                opponent=opponent.yes_sub_title,
+                competition=(event.get("product_metadata") or {}).get("competition"),
+                occurrence_datetime=market.occurrence_datetime,
+            )
+        return None

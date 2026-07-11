@@ -34,5 +34,10 @@ tours: [ATP, WTA]
 series:
   atp: KXATPMATCH
   wta: KXWTAMATCH   # confirmed via scripts/probe.py (2026-07-02)
+  # Tournament-winner (outright) series. Kalshi lists a Grand Slam FINAL only here (not as an
+  # H2H market); once the field is down to two, the outright collapses to a head-to-head, so
+  # /check and /scan price it. Non-final futures markets (many players still active) are skipped.
+  atp_outright: KXATP
+  wta_outright: KXWTA
 
 kalshi_base_url: https://external-api.demo.kalshi.co/trade-api/v2

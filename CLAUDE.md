@@ -55,6 +55,11 @@ Bias to caution over speed; use judgment on trivial tasks.
 ## Key design facts (settled — don't re-derive)
 - Kalshi contracts are priced **1–99¢ = implied probability**; back a player = **buy Yes**,
   lay = **buy No** (`yes_sub_title` says which player "Yes" pays out on).
+- **Kalshi lists tennis two ways** (Phase 4.5, see DESIGN-DECISIONS): head-to-head under
+  `KXATPMATCH`/`KXWTAMATCH` (incl. 2026 Slam rounds, `"A vs B"` titles), and **tournament-outright**
+  under `KXATP`/`KXWTA` — a **Grand Slam final is listed only as the outright** (one contract per
+  player). Rule: an open outright event with **exactly two `active` contracts is the final** and its
+  book == the H2H book; more-than-two = a futures field, skipped.
 - **Net-of-fee edge** = `(p_model − price) − 0.07·price·(1−price)`; **alert at ≥ 3%**. Fees peak
   near 50¢ and shrink on favorites — bias toward favorites.
 - **¼-Kelly on a binary contract — size on NET edge:** `f* = net_edge/(1 − price)`;

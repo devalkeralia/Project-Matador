@@ -8,6 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class SeriesConfig(BaseModel):
     atp: str = "KXATPMATCH"
     wta: str | None = None  # unconfirmed until scripts/probe.py discovers it
+    # Tournament-winner (outright) series. Kalshi lists a Grand Slam final only here, not as an
+    # H2H market; once the field is down to two, the outright collapses to a head-to-head.
+    atp_outright: str | None = "KXATP"
+    wta_outright: str | None = "KXWTA"
 
 
 class EloConfig(BaseModel):

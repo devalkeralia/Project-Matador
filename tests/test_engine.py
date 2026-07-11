@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from matador.config import Config
-from matador.engine import Opportunity, depth_at_ask, evaluate_match, evaluate_resolution, log_opportunity, scan_series, spread
+from matador.engine import Opportunity, depth_at_ask, evaluate_match, evaluate_resolution, list_open_matches, log_opportunity, scan_outright_finals, scan_series, spread
 from matador.kalshi.client import KalshiClient, MatchResolution
 from matador.model.artifact import Model
 from matador.model.probability import WinProbability
@@ -58,6 +58,7 @@ def test_alert_on_yes_side():
     r = _eval(FakeModel(WinProbability(0.60, "ok")), LIQUID_BOOK, make_cfg())
     assert r.status == "alert"
     assert r.opportunity.side == "yes"
+    assert r.opportunity.market_player == "Player Aaa"  # from resolution.yes_sub_title
     assert r.opportunity.price == pytest.approx(0.50)
     assert r.opportunity.p_model == pytest.approx(0.60)
     assert r.opportunity.contracts >= 1
@@ -124,7 +125,8 @@ def test_depth_at_ask_and_spread():
 def _opp(**overrides) -> Opportunity:
     fields = dict(
         ts="2026-07-04T12:00:00+00:00", tour="ATP", event="Wimbledon Men Singles", match="Aaa vs Bbb",
-        market_ticker="KXATPMATCH-26JUL04AB-A", event_ticker="KXATPMATCH-26JUL04AB", side="yes", price=0.50,
+        market_ticker="KXATPMATCH-26JUL04AB-A", event_ticker="KXATPMATCH-26JUL04AB",
+        market_player="Player Aaa", side="yes", price=0.50,
         p_model=0.60, net_edge=0.08, suggested_stake=40.0, contracts=80, liquidity=50.0,
         trigger_reason="prematch_value", occurrence_datetime="2026-07-04T13:00:00Z", flagged=False, score_state=None,
     )
@@ -151,6 +153,7 @@ def test_stored_opportunity_carries_clv_fields():
     log_opportunity(conn, _opp(flagged=True))
     row = get_opportunity(conn, 1)
     assert row["event_ticker"] == "KXATPMATCH-26JUL04AB"
+    assert row["market_player"] == "Player Aaa"
     assert row["occurrence_datetime"] == "2026-07-04T13:00:00Z"
     assert row["flagged"] == 1
     conn.close()
@@ -189,7 +192,9 @@ def make_client(markets=None, fail_orderbook=False) -> KalshiClient:
     def handler(request):
         path = request.url.path
         if path.endswith("/events"):
-            return httpx.Response(200, json=_EVENTS)
+            # only the H2H series has these events; the outright series (if queried) is empty
+            events = _EVENTS if request.url.params.get("series_ticker") == "KXATPMATCH" else {"events": []}
+            return httpx.Response(200, json=events)
         if path.endswith("/orderbook"):
             return httpx.Response(500 if fail_orderbook else 200, json={} if fail_orderbook else LIQUID_BOOK)
         if path.endswith("/markets"):
@@ -274,6 +279,106 @@ def test_context_derives_surface_best_of_and_date_from_kalshi_metadata():
         evaluate_match(client, model, make_cfg(), "atp", "Aaa", "Bbb")
     # "Wimbledon Men Singles" -> (Grass, Bo5); event_date parsed from occurrence_datetime
     assert model.args == ("Grass", 5, date(2026, 7, 4))
+
+
+# ---- Phase 4.5: priced-but-no-alert diagnostics ----
+
+def test_no_edge_abstain_carries_diagnostics():
+    r = _eval(FakeModel(WinProbability(0.51, "ok")), LIQUID_BOOK, make_cfg())
+    assert r.status == "abstain" and r.reason == "no_edge"
+    d = r.diagnostics
+    assert d is not None
+    assert (d.market_player, d.opponent) == ("Player Aaa", "Player Bbb")
+    assert d.p_model == pytest.approx(0.51) and d.yes_price == pytest.approx(0.50)
+    assert d.yes_net_edge is not None and d.no_net_edge is not None
+    assert d.depth == pytest.approx(50.0)          # LIQUID_BOOK no-side size funds the yes-ask depth
+    assert d.min_net_edge == pytest.approx(0.03)
+
+
+def test_pre_pricing_abstains_have_no_diagnostics():
+    empty = _eval(FakeModel(WinProbability(0.60, "ok")), book([], []), make_cfg())
+    assert empty.reason == "empty_book" and empty.diagnostics is None
+    model_out = _eval(FakeModel(WinProbability(None, "insufficient_history(3,40<20)")), LIQUID_BOOK, make_cfg())
+    assert model_out.diagnostics is None            # can't price -> nothing to show
+
+
+# ---- Phase 4.5: Grand Slam outright-final support ----
+
+_OUTRIGHT_EVENT = "KXATP-26FINAL"
+
+
+def _outright_market(ticker, name, status):
+    return {"ticker": ticker, "event_ticker": _OUTRIGHT_EVENT, "status": status,
+            "yes_sub_title": name, "no_sub_title": name, "occurrence_datetime": "2026-07-13T05:00:00Z"}
+
+
+def make_outright_client(active, finalized=()) -> KalshiClient:
+    """Mock a tournament-winner event: `active` finalists still trading, `finalized` eliminated.
+    The H2H series (KXATPMATCH) is empty, so evaluate_match must fall back to the outright series."""
+    event = {"event_ticker": _OUTRIGHT_EVENT, "title": "Tournament Final",
+             "product_metadata": {"competition": "Wimbledon Men Singles"}}
+    markets = [_outright_market(f"{_OUTRIGHT_EVENT}-{i}", n, "active") for i, n in enumerate(active)]
+    markets += [_outright_market(f"{_OUTRIGHT_EVENT}-F{i}", n, "finalized") for i, n in enumerate(finalized)]
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/events"):
+            evs = {"events": [event]} if request.url.params.get("series_ticker") == "KXATP" else {"events": []}
+            return httpx.Response(200, json=evs)
+        if path.endswith("/orderbook"):
+            return httpx.Response(200, json=LIQUID_BOOK)
+        if path.endswith("/markets"):
+            et = request.url.params.get("event_ticker")
+            return httpx.Response(200, json={"markets": markets if et == _OUTRIGHT_EVENT else []})
+        raise AssertionError(f"unexpected {request.url}")
+
+    return KalshiClient(base_url="https://x/trade-api/v2", transport=httpx.MockTransport(handler))
+
+
+def test_resolve_outright_final_matches_the_two_finalists():
+    with make_outright_client(["Player Aaa", "Player Bbb"], finalized=["Player Ccc", "Player Ddd"]) as client:
+        res = client.resolve_outright_final("KXATP", "Aaa", "Bbb")
+    assert res is not None
+    assert res.yes_sub_title == "Player Aaa" and res.opponent == "Player Bbb"
+    assert res.event_ticker == _OUTRIGHT_EVENT and res.competition == "Wimbledon Men Singles"
+
+
+def test_resolve_outright_final_skips_full_field_futures():
+    with make_outright_client(["Player Aaa", "Player Bbb", "Player Ccc"]) as client:  # 3 active -> not a final
+        assert client.resolve_outright_final("KXATP", "Aaa", "Bbb") is None
+
+
+def test_resolve_outright_final_none_when_a_player_is_not_a_finalist():
+    with make_outright_client(["Player Aaa", "Player Bbb"]) as client:
+        assert client.resolve_outright_final("KXATP", "Aaa", "Zzz") is None
+
+
+def test_evaluate_match_falls_back_to_outright_final():
+    with make_outright_client(["Player Aaa", "Player Bbb"], finalized=["Player Ccc"]) as client:
+        r = evaluate_match(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg(), "atp", "Aaa", "Bbb")
+    assert r.status == "alert" and r.opportunity.side == "yes"
+    assert r.opportunity.market_player == "Player Aaa" and r.opportunity.event_ticker == _OUTRIGHT_EVENT
+
+
+def test_scan_outright_finals_yields_final_and_skips_futures():
+    with make_outright_client(["Player Aaa", "Player Bbb"], finalized=["Player Ccc"]) as client:
+        results = list(scan_outright_finals(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg(), "atp"))
+    assert len(results) == 1 and results[0].status == "alert"
+    with make_outright_client(["Player Aaa", "Player Bbb", "Player Ccc"]) as client:
+        assert list(scan_outright_finals(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg(), "atp")) == []
+
+
+def test_list_open_matches_flags_modellable_and_strength(tmp_path):
+    fresh = tmp_path / "m.json"
+    fresh.write_text(json.dumps(_tiny_artifact("2026-07-01")))
+    model = Model.from_artifact(fresh)
+    with make_client() as client:  # one H2H event (Player Aaa vs Player Bbb); outright series empty
+        matches = list_open_matches(client, model, make_cfg(), "atp")
+    assert len(matches) == 1
+    m = matches[0]
+    assert (m.player_a, m.player_b) == ("Player Aaa", "Player Bbb")
+    assert m.modellable is True and m.is_final is False
+    assert m.strength == (1800.0, 1600.0)  # (higher, lower) overall Elo from the artifact
 
 
 def test_real_model_through_engine_alerts_and_enforces_staleness(tmp_path):

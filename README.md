@@ -8,14 +8,18 @@ places orders.
 
 ## Status
 
-**Phase 3 (edge + staking engine) built — 141 tests passing.** On-demand engine
-(`matador/engine.py` + `scripts/scan.py`) that reprices a live Kalshi match, computes net-of-fee
-edge, sizes a ¼-Kelly stake, applies a liquidity/spread gate, and **logs** a `prematch_value`
-opportunity — paper only, **never places orders**. Reads Kalshi **production** market data
-(read-only). Phases 1 (data plumbing) and 2 (per-tour surface-Elo model → fitted logistic →
-calibrated `p_model`; ATP Brier 0.2181, WTA 0.2176) are done. Next: **Phase 4** (Telegram alerts),
-building toward **forward CLV paper-testing** (the go-live bar). **v1 = pre-match value alerts
-only** (in-play mean-reversion pilot = v2).
+**Phase 4 + 4.5 (Telegram value-alert bot, with Grand Slam markets) built — 189 tests passing.** An always-on bot
+(`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
+`/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
+formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
+model probability, per-side edge math) — logging qualifying paper opportunities for CLV. `/find`
+lists open matches (one per line) with the checkable ones ranked by model strength; `/notes`
+explains how to read a message; also `/recent` and `/help`. On-demand only (never polls Kalshi on
+a timer); owner-chat-gated; **never places orders**. Phases 1–3 (data plumbing; per-tour surface-Elo model →
+fitted logistic → calibrated `p_model`, ATP Brier 0.2181 / WTA 0.2176; net-of-fee edge + ¼-Kelly
+staking engine) are done. Next: **Phase 5** (persist outcomes + CLV/stats), building toward
+**forward CLV paper-testing** (the go-live bar). **v1 = pre-match value alerts only** (in-play
+mean-reversion pilot = v2).
 
 _Last updated: 2026-07-10_
 
@@ -52,17 +56,48 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-**Phase 4 — Telegram alerts:** deliver the Phase-3 engine's qualifying opportunities to Telegram
-(`python-telegram-bot`), on-demand. See `MASTER-PROMPT.md` Phase 4. Then Phases 5–6 log
-CLV/outcomes for **forward CLV paper-testing** — the real go-live test, not live money. (Phase 3
-reads Kalshi production; before relying on the liquidity gate, calibrate `min_liquidity`/`max_spread`
-with `scan.py dry-run` on a liquid slate — the current placeholders were set from a thin field.)
+**Phase 5 — persistence + CLV/stats:** add `/result` + `/stats` and the closing-line-value
+pipeline (`record_outcome` + the stored `occurrence_datetime`/`event_ticker` are the hooks), then
+run **forward CLV paper-testing** — the real go-live test, not live money. Before relying on the
+liquidity gate, calibrate `min_liquidity`/`max_spread` with `scan.py dry-run` on a liquid slate —
+the current placeholders were set from a thin field. To run the bot: put `TELEGRAM_TOKEN` +
+`TELEGRAM_CHAT_ID` in `secrets/.env`, then `.venv/bin/python scripts/bot.py`. See
+[`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"** for the full
+list of deferred features, monitored gaps, and the validation gate.
 
 ## Changelog
 
-- **2026-07-10 — Phase 4 planned (parked, not built).** Approved, researched plan committed as
-  `PHASE-4-PLAN.md` — a Telegram alert bot (`/check`, `/scan`, `/recent`, `/help`) that reuses the
-  Phase-3 engine and delivers/logs paper opportunities on-demand. Held for later execution.
+- **2026-07-10 — Phase 4.5 (Grand Slam markets, /find, /notes, self-explaining /check); 189 tests.**
+  Additions on top of Phase 4. (0) **`/find [atp|wta]`** — lists open matches (H2H + outright
+  finals, one per line) and ranks the model-priceable ones by Elo strength (a rankings proxy; we
+  don't ingest official rankings), so you can see what's checkable at a glance (`engine.list_open_matches`
+  + `alerts.format_find`). **`/notes`** — a how-to-read-the-messages guide (linked as a footnote on
+  every `/check` reply). (1) **Grand Slam final support:** Kalshi lists a Slam final only as a tournament-
+  **outright** market (series `KXATP`/`KXWTA`, one contract per player — "will X win the title"),
+  not a head-to-head; once the field is down to two, the outright collapses to an H2H, so
+  `client.resolve_outright_final` + `engine.scan_outright_finals` price it. Gate: an open outright
+  event with **exactly two contracts still `active`** is the final; a full-field futures market
+  (many active) is skipped. `/check` falls back to the outright series when there's no H2H market;
+  `/scan` sweeps finals too. (Per-round Slam matches were already handled — 2026 uses `A vs B`
+  titles under `KXATPMATCH`; the 2025 `"X or Y advances?"` format is a documented, monitored gap.)
+  (3) **Self-explaining /check:** when a market was priced but no alert fired, the reply now walks
+  through the reasoning — market prices (+ implied %), order-book depth, the model's probability, and
+  the per-side edge math (gap → fee → net edge vs the +3% bar) ending in a plain-English verdict (via
+  `engine.Diagnostics` + `alerts.format_no_alert`). Verified live against **both** Wimbledon 2026
+  finals (ATP Sinner–Zverev, WTA Muchova–Noskova), which also **confirms** the outright series
+  `KXATP`/`KXWTA`.
+- **2026-07-10 — Phase 4 (Telegram value-alert bot) built; 174 tests.** `matador/bot.py`
+  (PTB-free testable sync cores — `run_check`/`run_scan`/`run_recent` + pure helpers — wrapped by
+  thin async handlers that offload the blocking engine via `asyncio.to_thread`) + `scripts/bot.py`
+  launcher: long-polls Telegram for `/check`, `/scan`, `/recent`, `/help` (`/start` alias), runs
+  the Phase-3 engine against live Kalshi (read-only; production by default, `--demo` toggle), and
+  replies with a formatted VALUE ALERT + ¼-Kelly stake (or a friendly abstain), logging qualifying
+  **paper** opportunities (deduped). `matador/alerts.py` holds the pure formatters. Added a
+  `market_player` field (engine + storage) so alerts read `BUY YES "Sinner wins"` and the log is
+  self-describing. Owner-chat-gated (`filters.Chat` + in-handler check); on-demand only (polls
+  Telegram, never Kalshi on a timer); **never places orders** (no signer, no order endpoint
+  reachable). Added `python-telegram-bot>=21.9` — httpx stays 0.28.x. `/result`+`/stats`+CLV
+  deferred to Phase 5. (Supersedes the parked plan `PHASE-4-PLAN.md`, now removed.)
 - **2026-07-10 — Phase 3 (edge + staking engine) built; 152 tests.** `matador/engine.py` wires
   resolve → `p_model` → net-of-fee edge → ¼-Kelly stake → liquidity/spread gate → deduped
   `prematch_value` opportunity (reusing `edge.py` + `Model.predict`); `matador/tournament.py`

@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     match TEXT,
     market_ticker TEXT NOT NULL,
     event_ticker TEXT,
+    market_player TEXT,         -- yes_sub_title: the player the Yes contract pays out on (self-describing alert log)
     side TEXT NOT NULL CHECK (side IN ('yes', 'no')),
     price REAL NOT NULL,
     p_model REAL NOT NULL,
@@ -44,6 +45,7 @@ _OPPORTUNITY_COLUMNS = (
     "match",
     "market_ticker",
     "event_ticker",
+    "market_player",
     "side",
     "price",
     "p_model",

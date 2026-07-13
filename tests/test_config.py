@@ -21,7 +21,7 @@ def test_valid_config_loads_with_defaults():
     assert cfg.tours == ["ATP", "WTA"]
     assert cfg.series.atp == "KXATPMATCH"
     assert cfg.series.wta is None
-    assert cfg.min_price is None
+    assert cfg.min_price == 0.10  # favorite floor on by default (blocks deep longshots)
 
 
 def test_rejects_nonpositive_bankroll():

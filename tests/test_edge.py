@@ -1,7 +1,7 @@
 import pytest
 
 from matador.config import Config
-from matador.edge import evaluate_market, kelly_stake, net_edge
+from matador.edge import evaluate_market, kalshi_fee, kelly_stake, net_edge
 
 
 def _cfg(**overrides) -> Config:
@@ -47,3 +47,27 @@ def test_evaluate_market_abstains_without_edge():
 def test_evaluate_market_abstains_above_max_price():
     # Yes would be hugely +EV but its price is above max_price; No side is -EV -> abstain.
     assert evaluate_market(0.99, 0.96, 0.04, _cfg()) is None
+
+
+def test_kalshi_fee_rounds_up_to_the_cent_per_order():
+    assert kalshi_fee(0.50, 100, 0.07) == pytest.approx(1.75)   # 0.07*100*0.25 = 1.75 exactly
+    assert kalshi_fee(0.50, 3, 0.07) == pytest.approx(0.06)     # 0.0525 -> rounds UP to 0.06
+    assert kalshi_fee(0.90, 10, 0.07) == pytest.approx(0.07)    # 0.063 -> up to 0.07 (favorite)
+
+
+def test_contracts_floor_no_off_by_one_at_cent_prices():
+    # $50 at 0.05 must floor to 1000 contracts, not 999 (plain // under-counts on float repr).
+    _, contracts = kelly_stake(1.0, 0.05, bankroll=1000.0, kelly_fraction=0.25, max_stake_pct=0.05)
+    assert contracts == 1000
+
+
+def test_min_price_floor_blocks_a_longshot():
+    # Model loves a 6c longshot, but price < min_price (0.10) -> no bet (unreliable Elo tail).
+    assert evaluate_market(0.30, 0.06, 0.94, _cfg(min_price=0.10)) is None
+
+
+def test_kelly_fraction_override_haircuts_the_stake():
+    cfg = _cfg()
+    full = evaluate_market(0.60, 0.45, 0.55, cfg)
+    half = evaluate_market(0.60, 0.45, 0.55, cfg, kelly_fraction=cfg.kelly_fraction * 0.5)
+    assert half.stake < full.stake  # a smaller Kelly fraction sizes down

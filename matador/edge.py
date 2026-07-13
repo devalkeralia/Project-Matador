@@ -17,6 +17,7 @@ min_net_edge / price-band / >=1-contract gates.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
@@ -31,8 +32,22 @@ class EdgeResult:
 
 
 def net_edge(p: float, price: float, fee_coefficient: float) -> float:
-    """Net-of-fee edge of buying at `price` when the true win prob is `p`."""
+    """Per-contract net-of-fee edge of buying at `price` when the true win prob is `p`. Uses the
+    linear fee approximation (fee_coefficient*price*(1-price)) as the Kelly-edge input for sizing.
+    The net-CLV go-live gate uses this SAME linear per-contract fee (on the entry price); only
+    realized P&L (clv.net_pnl) uses the exact round-up fee (kalshi_fee)."""
     return (p - price) - fee_coefficient * price * (1.0 - price)
+
+
+def kalshi_fee(price: float, contracts: int, fee_coefficient: float) -> float:
+    """Kalshi's taker fee for an ORDER of `contracts` at `price`: fee_coefficient*C*P*(1-P),
+    rounded UP to the next cent (per order, not per contract). The round-up is a fixed penalty the
+    linear per-contract approximation omits -- material for the small orders a personal bankroll
+    produces, so REALIZED P&L (clv.net_pnl) uses this. (The net-CLV gate keeps the linear
+    per-contract fee -- a per-order round-up can't apply to a size-independent CLV metric.)"""
+    # round(...,6) first: bare float noise (e.g. 0.07*100*0.25 -> 1.75000000000000002) would
+    # otherwise let ceil spuriously bump a whole cent (1.75 -> 1.76).
+    return math.ceil(round(fee_coefficient * contracts * price * (1.0 - price) * 100.0, 6)) / 100.0
 
 
 def kelly_stake(edge: float, price: float, *, bankroll: float, kelly_fraction: float, max_stake_pct: float) -> tuple[float, int]:
@@ -40,13 +55,14 @@ def kelly_stake(edge: float, price: float, *, bankroll: float, kelly_fraction: f
     converting to a whole number of contracts."""
     f_star = edge / (1.0 - price)
     stake = min(kelly_fraction * f_star * bankroll, max_stake_pct * bankroll)
-    contracts = int(stake // price)
+    contracts = math.floor(stake / price + 1e-9)  # +eps: plain // under-counts at exact cent prices (100/0.05)
     return stake, contracts
 
 
-def _evaluate_side(side: str, p: float, price: float | None, cfg) -> EdgeResult | None:
+def _evaluate_side(side: str, p: float, price: float | None, cfg, kelly_fraction: float) -> EdgeResult | None:
     """One side, or None if not actionable. `cfg` supplies fee_coefficient, min_net_edge,
-    max_price, min_price, bankroll, kelly_fraction, max_stake_pct."""
+    max_price, min_price, bankroll, max_stake_pct; `kelly_fraction` is passed in so the caller can
+    apply an extra haircut (e.g. for thin players)."""
     if price is None or not (0.0 < price < 1.0):
         return None
     if price > cfg.max_price:
@@ -57,19 +73,21 @@ def _evaluate_side(side: str, p: float, price: float | None, cfg) -> EdgeResult 
     if edge < cfg.min_net_edge:
         return None
     stake, contracts = kelly_stake(
-        edge, price, bankroll=cfg.bankroll, kelly_fraction=cfg.kelly_fraction, max_stake_pct=cfg.max_stake_pct,
+        edge, price, bankroll=cfg.bankroll, kelly_fraction=kelly_fraction, max_stake_pct=cfg.max_stake_pct,
     )
     if contracts < 1:
         return None
     return EdgeResult(side=side, price=price, p=p, net_edge=edge, stake=stake, contracts=contracts)
 
 
-def evaluate_market(p_model: float, yes_price: float | None, no_price: float | None, cfg) -> EdgeResult | None:
+def evaluate_market(p_model: float, yes_price: float | None, no_price: float | None, cfg, *, kelly_fraction: float | None = None) -> EdgeResult | None:
     """Best actionable side of a binary market, or None to abstain. p_model = P(Yes player
-    wins); the No side uses (1 - p_model) against no_price."""
+    wins); the No side uses (1 - p_model) against no_price. `kelly_fraction` overrides
+    cfg.kelly_fraction (the caller haircuts it for thin/uncertain bets)."""
+    kf = cfg.kelly_fraction if kelly_fraction is None else kelly_fraction
     candidates = [
-        _evaluate_side("yes", p_model, yes_price, cfg),
-        _evaluate_side("no", 1.0 - p_model, no_price, cfg),
+        _evaluate_side("yes", p_model, yes_price, cfg, kf),
+        _evaluate_side("no", 1.0 - p_model, no_price, cfg, kf),
     ]
     actionable = [c for c in candidates if c is not None]
     return max(actionable, key=lambda c: c.net_edge, default=None)

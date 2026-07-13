@@ -64,10 +64,14 @@ class Config(BaseModel):
     min_matches: int = 20
     min_liquidity: float
     max_spread: float
-    min_price: float | None = None
+    min_price: float | None = 0.10  # favorite floor: don't back a side priced below this (deep longshots -- unreliable Elo tails, ballooning contract counts). Tunable.
     max_price: float = 0.95
     fee_coefficient: float = 0.07
     adverse_gap: float = 0.15  # flag alerts whose net edge exceeds this for manual "recent news?" scrutiny (late injury/withdrawal the Elo can't see)
+    thin_matches: int = 50          # a player with fewer prior matches is "thin" (overconfident Elo): flag the alert, haircut the stake, and segment CLV/calibration by this
+    thin_kelly_haircut: float = 0.5  # extra Kelly-fraction multiplier applied to thin-player bets (uncertainty-aware sizing)
+    min_effect_size: float = 0.005   # go-live gate: the NET-CLV 95% CI lower bound must exceed this (a margin above break-even, in price units ~0.5c). Tunable.
+    min_clv_clusters: int = 30       # go-live gate: require at least this many independent day-clusters (alongside >= 200 bets)
     tours: list[str] = Field(default_factory=lambda: ["ATP", "WTA"])
     series: SeriesConfig = Field(default_factory=SeriesConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
@@ -82,14 +86,15 @@ class Config(BaseModel):
             raise ValueError("bankroll must be > 0")
         return v
 
-    @field_validator("kelly_fraction", "max_stake_pct")
+    @field_validator("kelly_fraction", "max_stake_pct", "thin_kelly_haircut")
     @classmethod
     def _fraction_range(cls, v: float) -> float:
         if not (0 < v <= 1):
             raise ValueError("must be in (0, 1]")
         return v
 
-    @field_validator("min_net_edge", "min_matches", "min_liquidity", "max_spread", "fee_coefficient", "adverse_gap")
+    @field_validator("min_net_edge", "min_matches", "min_liquidity", "max_spread", "fee_coefficient",
+                     "adverse_gap", "thin_matches", "min_effect_size", "min_clv_clusters")
     @classmethod
     def _nonnegative(cls, v: float) -> float:
         if v < 0:

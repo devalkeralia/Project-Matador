@@ -6,6 +6,7 @@ running event loop. PAPER alerts only -- these describe a suggested manual trade
 """
 from __future__ import annotations
 
+from matador.clv import MIN_BETS
 from matador.engine import Opportunity
 
 
@@ -184,3 +185,50 @@ def format_scan(alerts, abstain_tally, bankroll: float) -> str:
     blocks = [format_alert(opp, opp_id, bankroll) for opp, opp_id in alerts]
     footer = f"{len(alerts)} alert(s) · {total_skipped} skipped ({tally})"
     return "\n\n".join(blocks) + "\n\n" + footer
+
+
+# ---- Phase 5: result / close / stats ----
+
+def format_result(opp, result: str, fill_price: float, contracts: int, pnl: float) -> str:
+    """Confirmation for /result (a recorded fill + outcome). `opp` is the opportunities Row."""
+    return (
+        f"✅ Recorded opp #{opp['id']}: {opp['market_player']} {opp['side'].upper()} — "
+        f"{result.upper()} @ {_cents(fill_price)}, {contracts}c → P&L ${pnl:+.2f} (net of fee). "
+        f"See /stats for totals."
+    )
+
+
+def format_close(r: dict) -> str:
+    """One-line confirmation for a closing-line capture. `r` is the capture_close result dict."""
+    if not r["ok"]:
+        return {
+            "no_such_opp": f"No opportunity #{r['opp_id']}.",
+            "no_price": f"Couldn't read a closing price for opp #{r['opp_id']} (empty book / no last trade).",
+        }.get(r["reason"], f"Close failed for opp #{r['opp_id']}: {r['reason']}")
+    delta_cents = (r["closing_price"] - r["entry_price"]) * 100
+    return (
+        f"📌 Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} @ "
+        f"{_cents(r['closing_price'])} (entry {_cents(r['entry_price'])} → CLV {delta_cents:+.0f}¢)"
+    )
+
+
+def format_stats(s: dict) -> str:
+    """Render the /stats summary (matador.clv.summarize output): hit rate, P&L, and the CLV gate."""
+    lines = ["📊 Paper-trading stats", "", f"Opportunities logged: {s['n_opportunities']}"]
+    if s["n_results"]:
+        losses = s["n_results"] - s["wins"]
+        lines.append(f"Trades recorded: {s['n_results']} — {s['wins']}W/{losses}L (hit rate {s['hit_rate']:.0%})")
+        roi = f" (ROI {s['roi']:+.1%})" if s["roi"] is not None else ""
+        lines.append(f"Net P&L: ${s['total_pnl']:+.2f} on ${s['staked']:.0f} staked{roi}")
+    else:
+        lines.append("Trades recorded: none yet (use /result)")
+    lines += ["", "Closing-line value (the go-live metric):"]
+    if s["n_clv"]:
+        lo, hi = s["clv_ci"]
+        lines.append(f"  {s['n_clv']} bet(s) with a captured close")
+        lines.append(f"  Mean CLV {s['mean_clv']:+.1%} gross · 95% CI [{lo:+.1%}, {hi:+.1%}]")
+        gate = "✅ MET" if s["go_live"] else f"not yet — need CI lower bound > 0 and ≥ {MIN_BETS} bets ({s['n_clv']}/{MIN_BETS})"
+        lines.append(f"  Go-live gate: {gate}")
+    else:
+        lines.append("  No closing lines captured yet (use /close near match start).")
+    return "\n".join(lines)

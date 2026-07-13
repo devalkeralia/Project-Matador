@@ -8,20 +8,21 @@ places orders.
 
 ## Status
 
-**Phase 4 + 4.5 (Telegram value-alert bot, with Grand Slam markets) built — 189 tests passing.** An always-on bot
+**Phases 4–5 (Telegram bot + persistence/CLV) built — 208 tests passing.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
-model probability, per-side edge math) — logging qualifying paper opportunities for CLV. `/find`
-lists open matches (one per line) with the checkable ones ranked by model strength; `/notes`
-explains how to read a message; also `/recent` and `/help`. On-demand only (never polls Kalshi on
-a timer); owner-chat-gated; **never places orders**. Phases 1–3 (data plumbing; per-tour surface-Elo model →
-fitted logistic → calibrated `p_model`, ATP Brier 0.2181 / WTA 0.2176; net-of-fee edge + ¼-Kelly
-staking engine) are done. Next: **Phase 5** (persist outcomes + CLV/stats), building toward
-**forward CLV paper-testing** (the go-live bar). **v1 = pre-match value alerts only** (in-play
+model probability, per-side edge math) — logging qualifying paper opportunities. `/find` lists open
+matches ranked by model strength; **`/close`** captures the closing line (manual + auto-scheduled at
+match start), **`/result`** records outcomes, **`/stats`** reports hit rate, P&L, and **closing-line
+value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, `/notes`, `/help`.
+On-demand only (never polls Kalshi on a timer); owner-chat-gated; **never places orders**. Phases 1–3
+(data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
+/ WTA 0.2164; net-of-fee edge + ¼-Kelly staking engine) are done. Next: **Phase 6** — run the
+**forward CLV paper-test** (the go-live bar). **v1 = pre-match value alerts only** (in-play
 mean-reversion pilot = v2).
 
-_Last updated: 2026-07-10_
+_Last updated: 2026-07-13_
 
 ## What this is
 
@@ -56,17 +57,31 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-**Phase 5 — persistence + CLV/stats:** add `/result` + `/stats` and the closing-line-value
-pipeline (`record_outcome` + the stored `occurrence_datetime`/`event_ticker` are the hooks), then
-run **forward CLV paper-testing** — the real go-live test, not live money. Before relying on the
-liquidity gate, calibrate `min_liquidity`/`max_spread` with `scan.py dry-run` on a liquid slate —
-the current placeholders were set from a thin field. To run the bot: put `TELEGRAM_TOKEN` +
-`TELEGRAM_CHAT_ID` in `secrets/.env`, then `.venv/bin/python scripts/bot.py`. See
+**Phase 6 — forward CLV paper-testing (the go-live bar):** run the bot through live tournaments,
+capture closing lines (`/close`, or the auto-scheduler when the bot is always-on), record outcomes
+(`/result`), and watch `/stats` — go live only when the cluster-bootstrap 95% CI lower bound on mean
+CLV clears 0 over ~200+ bets. Recalibrate the liquidity gate on the August Masters (the current
+`min_liquidity`/`max_spread` are interim, set on a thin slate). To run the bot: put `TELEGRAM_TOKEN`
++ `TELEGRAM_CHAT_ID` in `secrets/.env`, then `.venv/bin/python scripts/bot.py`. See
 [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"** for the full
 list of deferred features, monitored gaps, and the validation gate.
 
 ## Changelog
 
+- **2026-07-13 — Phase 5 (persistence + CLV); 208 tests.** Turns the opportunity log into a
+  measurable track record for the forward-CLV go-live test. New commands: **`/close [opp_id]`**
+  snapshots the same-side closing line (a live read near match start — candlestick backfill is too
+  flaky; also **auto-scheduled** one-shot per opp via the PTB JobQueue, reconciled across restarts),
+  **`/result <opp_id> <win|loss> <fill> [contracts]`** records the outcome + net-of-fee P&L,
+  **`/stats`** reports hit rate, P&L/ROI, and **mean CLV with a cluster-bootstrap (by event) 95% CI**
+  + the go-live gate (CI lower bound > 0, ≥ 200 bets). New pure `matador/clv.py` (CLV / net-P&L /
+  bootstrap / summarize); `storage` gained `closing_captured_at`/`closing_source`, an **idempotent
+  column migration**, an upsert `record_outcome` (merges the two-phase close/result writes), and
+  `settled_bets`/`pending_captures` joins. Dep bumped to `python-telegram-bot[job-queue]` (APScheduler;
+  httpx still 0.28). Also did the pre-work: **model refreshed** (Wimbledon results; ATP Brier 0.2175
+  / WTA 0.2164) and **interim liquidity gate** set (`min_liquidity 500` / `max_spread 0.03`, to be
+  recalibrated on the August Masters). Paper only — still no order path. Verified live: real
+  closing-line capture → result → stats end-to-end.
 - **2026-07-10 — Phase 4.5 (Grand Slam markets, /find, /notes, self-explaining /check); 189 tests.**
   Additions on top of Phase 4. (0) **`/find [atp|wta]`** — lists open matches (H2H + outright
   finals, one per line) and ranks the model-priceable ones by Elo strength (a rankings proxy; we

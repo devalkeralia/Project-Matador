@@ -1,18 +1,25 @@
 import httpx
+import pytest
 
 from matador.bot import (
     build_application,
+    capture_close,
     is_authorized,
     parse_check_args,
+    parse_result_args,
     run_check,
+    run_close,
     run_recent,
+    run_result,
     run_scan,
+    run_stats,
+    schedule_pending_captures,
     split_message,
 )
 from matador.config import Config
 from matador.kalshi.client import KalshiClient
 from matador.model.probability import WinProbability
-from matador.storage import connect, init_db, recent_opportunities
+from matador.storage import connect, init_db, insert_opportunity, recent_opportunities
 
 
 # ---- helpers copied from test_engine.py (no tests/__init__.py -> can't cross-import) ----
@@ -202,6 +209,96 @@ def test_run_recent_empty_then_populated():
     conn.close()
 
 
+# ---- Phase 5: /result, /close, /stats ----
+
+def _logged_opp(conn, client):
+    """Log one real opportunity (Player Aaa yes @ 0.50) via run_check, return its id."""
+    run_check(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg(), conn, "atp", "Aaa", "Bbb")
+    return 1
+
+
+def test_parse_result_args():
+    assert parse_result_args("1043 win 0.54 85") == (1043, "win", 0.54, 85)
+    assert parse_result_args("7 loss 54") == (7, "loss", 0.54, None)   # cents + default contracts
+    assert parse_result_args("7 draw 0.5") is None                     # bad result
+    assert parse_result_args("7 win 150") is None                      # 150c = $1.50, out of range
+    assert parse_result_args("garbage") is None
+
+
+def test_run_result_records_fill_and_pnl():
+    conn = _db()
+    with make_client() as client:
+        _logged_opp(conn, client)
+    out = run_result(conn, 1, "win", 0.50, 100, make_cfg())
+    assert "Recorded opp #1" in out and "WIN" in out
+    row = conn.execute("SELECT fill_price, contracts_filled, result, pnl FROM outcomes WHERE opp_id=1").fetchone()
+    assert row["result"] == "win" and row["fill_price"] == 0.5 and row["contracts_filled"] == 100
+    assert row["pnl"] == pytest.approx(100 - 50 - 1.75)  # net of fee
+    assert run_result(conn, 999, "win", 0.5, 10, make_cfg()) == "No opportunity #999 to record."
+    conn.close()
+
+
+def test_run_close_captures_same_side_line():
+    conn = _db()
+    with make_client() as client:
+        _logged_opp(conn, client)                    # yes @ 0.50; LIQUID_BOOK yes_ask = 0.50
+        out = run_close(client, conn, 1)
+    assert "Closing line opp #1" in out
+    row = conn.execute("SELECT closing_price, closing_source FROM outcomes WHERE opp_id=1").fetchone()
+    assert row["closing_price"] == 0.5 and row["closing_source"] == "manual"
+    conn.close()
+
+
+def test_capture_close_falls_back_to_last_trade_on_empty_book():
+    def handler(request):
+        p = request.url.path
+        if p.endswith("/orderbook"):
+            return httpx.Response(200, json={"orderbook_fp": {"yes_dollars": [], "no_dollars": []}})
+        if "/markets/" in p:  # GET /markets/{ticker}
+            return httpx.Response(200, json={"market": {"ticker": "T-A", "event_ticker": "E",
+                "status": "active", "yes_sub_title": "Player Aaa", "no_sub_title": "Player Aaa",
+                "last_price_dollars": "0.62"}})
+        raise AssertionError(f"unexpected {request.url}")
+
+    conn = _db()
+    insert_opportunity(conn, ts="t", tour="ATP", market_ticker="T-A", market_player="Player Aaa",
+                       side="yes", price=0.50, p_model=0.6, net_edge=0.08, trigger_reason="prematch_value")
+    client = KalshiClient(base_url="https://x/trade-api/v2", transport=httpx.MockTransport(handler))
+    r = capture_close(client, conn, 1, source="auto")
+    client.close()
+    assert r["ok"] and r["closing_price"] == 0.62  # empty book -> last_price (yes side)
+    conn.close()
+
+
+def test_run_stats_after_close_and_result():
+    conn = _db()
+    with make_client() as client:
+        _logged_opp(conn, client)
+        run_close(client, conn, 1)
+    run_result(conn, 1, "win", 0.50, 100, make_cfg())
+    out = run_stats(conn, make_cfg())
+    assert "Paper-trading stats" in out
+    assert "Trades recorded: 1" in out and "1W/0L" in out
+    assert "1 bet(s) with a captured close" in out and "Go-live gate" in out
+    conn.close()
+
+
+# ---- auto-scheduled capture ----
+
+def test_schedule_pending_captures_schedules_timed_opps_only(tmp_path):
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+    base = dict(ts="t", tour="ATP", side="yes", price=0.5, p_model=0.6, net_edge=0.08, trigger_reason="prematch_value")
+    insert_opportunity(conn, market_ticker="T-A", occurrence_datetime="2099-01-01T00:00:00Z", **base)  # id 1, future
+    insert_opportunity(conn, market_ticker="T-B", occurrence_datetime=None, **base)                     # id 2, no time
+    conn.close()
+    app = build_application("1:x", make_cfg(db_path=dbp), object(), chat_id=42)
+    assert schedule_pending_captures(app) == 1                 # only the opp with an occurrence is scheduled
+    assert app.job_queue.get_jobs_by_name("close:1")
+    assert schedule_pending_captures(app) == 0                 # idempotent -- already scheduled, not duplicated
+
+
 # ---- split_message ----
 
 def test_split_message_packs_whole_lines_and_is_lossless():
@@ -217,10 +314,11 @@ def test_build_application_sets_bot_data_and_registers_handlers():
     app = build_application("123:ABC", make_cfg(), object(), chat_id=42, demo=True)
     assert app.bot_data["chat_id"] == 42 and app.bot_data["demo"] is True
     assert app.bot_data["default_tour"] == "atp"
-    assert len(app.handlers[0]) == 6  # check, find(+findmatch), scan, recent, notes(+helpnotes), help(+start)
+    assert app.job_queue is not None  # job-queue extra installed -> auto CLV capture can schedule
+    assert len(app.handlers[0]) == 9  # check, find, scan, recent, result, close, stats, notes, help
 
 
 def test_help_and_notes_text():
     import matador.bot as bot
-    assert "/notes" in bot.HELP and "/find" in bot.HELP
-    assert bot.NOTES.startswith("📘") and "net edge" in bot.NOTES
+    assert all(c in bot.HELP for c in ("/find", "/result", "/close", "/stats", "/notes"))
+    assert bot.NOTES.startswith("📘") and "net edge" in bot.NOTES and "CLV" in bot.NOTES

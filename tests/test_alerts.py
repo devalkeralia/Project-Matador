@@ -1,4 +1,7 @@
-from matador.alerts import _compact, format_abstain, format_alert, format_find, format_no_alert, format_recent, format_scan
+from matador.alerts import (
+    _compact, format_abstain, format_alert, format_close, format_find, format_no_alert,
+    format_recent, format_result, format_scan, format_stats,
+)
 from matador.engine import Diagnostics, MatchInfo, Opportunity
 from matador.storage import connect, init_db, insert_opportunity, recent_opportunities
 
@@ -168,3 +171,31 @@ def test_format_scan_renders_alert_blocks_and_tally():
     assert 'BUY YES "Player Aaa wins"' in out
     assert 'BUY NO "Player Aaa wins"' in out
     assert "2 alert(s) · 5 skipped (no_edge: 5)" in out
+
+
+# ---- format_result / format_close / format_stats ----
+
+def test_format_result():
+    out = format_result({"id": 5, "market_player": "Jannik Sinner", "side": "yes"}, "win", 0.54, 85, 48.25)
+    assert "Recorded opp #5" in out and "WIN" in out and "54¢" in out and "$+48.25" in out
+
+
+def test_format_close_ok_and_fail():
+    ok = format_close({"opp_id": 5, "ok": True, "side": "yes", "market_player": "Jannik Sinner",
+                       "closing_price": 0.58, "entry_price": 0.54})
+    assert "Closing line opp #5" in ok and "58¢" in ok and "CLV +4¢" in ok
+    assert "No opportunity #9" in format_close({"opp_id": 9, "ok": False, "reason": "no_such_opp"})
+    assert "empty book" in format_close({"opp_id": 3, "ok": False, "reason": "no_price"})
+
+
+def test_format_stats_empty_and_populated():
+    empty = format_stats({"n_opportunities": 0, "n_results": 0, "wins": 0, "hit_rate": None,
+                          "total_pnl": 0.0, "staked": 0.0, "roi": None, "n_clv": 0, "mean_clv": None,
+                          "clv_ci": None, "go_live": False})
+    assert "none yet" in empty and "No closing lines captured yet" in empty
+    out = format_stats({"n_opportunities": 3, "n_results": 2, "wins": 1, "hit_rate": 0.5,
+                        "total_pnl": 12.5, "staked": 100.0, "roi": 0.125, "n_clv": 2, "mean_clv": 0.03,
+                        "clv_ci": (-0.01, 0.07), "go_live": False})
+    assert "1W/1L" in out and "hit rate 50%" in out
+    assert "Mean CLV +3.0% gross · 95% CI [-1.0%, +7.0%]" in out
+    assert "not yet" in out and "2/200" in out

@@ -317,24 +317,39 @@ rule, never a per-event ticker (`KXATP-26WIM` etc.), so it generalises to every 
 tournament final. Confirmed live against **both** Wimbledon 2026 finals — `KXATP` (Sinner–Zverev)
 and `KXWTA` (Muchova–Noskova); `/find` surfaced them as the only model-priceable open matches.
 
-## Open items & deferred work (as of Phase 4.5, 2026-07-10)
+## Open items & deferred work (as of Phase 5, 2026-07-13)
 
-Phases 1–4.5 are built (data plumbing → surface-Elo model → edge/staking engine → Telegram bot +
-Grand Slam markets). What's left, by category:
+Phases 1–5 are built (data plumbing → surface-Elo model → edge/staking engine → Telegram bot +
+Grand Slam markets → persistence + CLV). What's left, by category:
 
-**Next up — Phase 5 (persistence + CLV):**
-- `/result <opp_id> <win|loss> <fill_price> [contracts]` and `/stats` (`storage.record_outcome`
-  already exists; the stored `occurrence_datetime` + `event_ticker` are the hooks).
-- CLV capture: closing price at **scheduled match start** (a single settled-market read, exempt
-  from the no-poll rule) — this is the go-live metric, not settlement.
+**Phase 5 — persistence + CLV — DONE (2026-07-13):**
+- `/close` (manual + auto-scheduled one-shot at match start), `/result`, `/stats`; `matador/clv.py`
+  (CLV / net-P&L / cluster-bootstrap CI / summarize); `outcomes` upsert + `closing_captured_at`.
+- CLV = **same-side closing price − entry** (entry = fill if recorded, else the logged alert price),
+  reported GROSS; a **LIVE** read (candlestick backfill was ~25%/flaky — unusable forward). Go-live
+  gate = lower bound of a **cluster (by event) bootstrap 95% CI on mean CLV > 0**, ≥ 200 bets.
+
+**Next — Phase 6: run the forward CLV paper-test** (the binding gate below). Accumulate ~200+ paper
+bets across live tournaments; `/stats` reports the gate.
 
 **Validation / go-live gate (binding):**
 - **A pre-match edge is NOT yet demonstrated** — `p_model` does not beat the sharp bookmaker close
   (Brier-optimal blend weight 0; ~−10.6% flat ROI on held-out). **Do not bet real money.**
 - Go-live bar: **positive forward CLV over ~200+ paper bets on Kalshi**, net of fees.
-- **Liquidity gate thresholds** (`min_liquidity`, `max_spread`) are placeholders set from a thin
-  post-Wimbledon field — recalibrate via `scan.py dry-run` on a liquid Masters/Slam slate.
+- **Liquidity gate thresholds** — set to INTERIM values on 2026-07-13 (`min_liquidity: 500`,
+  fill-driven for the $100 capped stake; `max_spread: 0.03`, just above the observed 2¢ p90) from a
+  `scan.py dry-run` on a post-Wimbledon 250 slate (tight books: spread med ~1¢, depth med ~1.5k–2.7k
+  contracts). **Recalibrate definitively on the August Masters** (Toronto/Cincinnati) from the
+  observed liquid distribution.
 - Re-evaluate cold-start shrinkage `n0` (0 vs 10) via CLV segmented by player match-count.
+- **Model-improvement levers, if forward CLV is flat** (v1 is plain *career* Elo, no time-weighting):
+  the first lever is **recency / time-decayed Elo** — down-weight matches by age so old results and
+  bygone eras fade (this, not dropping players, is the right fix for "stale/retired-era data
+  over-weights"). **Do NOT drop retired players from the rating build:** Elo is a chain, so their
+  matches are load-bearing signal for the *active* players who beat/lost to them; deleting them
+  corrupts active ratings. Retired players are already inert at predict time (never in a Kalshi
+  market, and the 365-day staleness gate abstains regardless). Further levers: level-weighted K and
+  serve-adjusted Elo (UTS / open-source tennis-crystal-ball reference).
 
 **Deferred features:**
 - `/settings` (view/update thresholds + bankroll at runtime) — later.

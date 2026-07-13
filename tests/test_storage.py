@@ -2,7 +2,10 @@ import sqlite3
 
 import pytest
 
-from matador.storage import connect, get_opportunity, init_db, insert_opportunity, record_outcome, recent_opportunities
+from matador.storage import (
+    connect, get_opportunity, init_db, insert_opportunity, pending_captures,
+    record_outcome, recent_opportunities, settled_bets,
+)
 
 
 @pytest.fixture
@@ -105,6 +108,52 @@ def test_recent_opportunities_orders_newest_first_and_respects_limit(db):
     top_two = recent_opportunities(db, limit=2)
 
     assert [row["id"] for row in top_two] == list(reversed(ids))[:2]
+
+
+# ---- Phase 5: upsert, migration, join queries ----
+
+def test_record_outcome_upsert_merges_partial_writes(db):
+    opp_id = make_opportunity(db)
+    record_outcome(db, opp_id, closing_price=0.56, closing_captured_at="2026-07-13T13:00:00Z", closing_source="auto")
+    record_outcome(db, opp_id, fill_price=0.42, contracts_filled=80, result="win", pnl=9.6)  # later, merges
+    row = db.execute("SELECT * FROM outcomes WHERE opp_id = ?", (opp_id,)).fetchone()
+    assert row["closing_price"] == 0.56 and row["closing_source"] == "auto"  # first write preserved
+    assert row["fill_price"] == 0.42 and row["result"] == "win"              # second write merged in
+    assert db.execute("SELECT count(*) FROM outcomes").fetchone()[0] == 1    # still one row (no PK collision)
+
+
+def test_record_outcome_rejects_unknown_field(db):
+    opp_id = make_opportunity(db)
+    with pytest.raises(ValueError):
+        record_outcome(db, opp_id, bogus_field=1)
+
+
+def test_init_db_migrates_missing_columns_idempotently():
+    conn = connect(":memory:")
+    # simulate a pre-Phase-5 DB: outcomes without closing_captured_at/closing_source, with data
+    conn.executescript(
+        "CREATE TABLE opportunities (id INTEGER PRIMARY KEY, market_ticker TEXT, side TEXT);"
+        "CREATE TABLE outcomes (opp_id INTEGER PRIMARY KEY, closing_price REAL);"
+    )
+    conn.execute("INSERT INTO outcomes (opp_id, closing_price) VALUES (1, 0.5)")
+    init_db(conn)  # should ALTER-add the missing columns
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(outcomes)")}
+    assert {"closing_captured_at", "closing_source"} <= cols
+    assert "market_player" in {r["name"] for r in conn.execute("PRAGMA table_info(opportunities)")}
+    assert conn.execute("SELECT closing_price FROM outcomes WHERE opp_id=1").fetchone()[0] == 0.5  # data preserved
+    init_db(conn)  # idempotent -- re-running must not error
+    conn.close()
+
+
+def test_settled_bets_joins_and_pending_captures_filters(db):
+    a = make_opportunity(db, market_ticker="T-A", side="yes", price=0.50)
+    b = make_opportunity(db, market_ticker="T-B", side="no", price=0.30)
+    record_outcome(db, a, closing_price=0.56, closing_captured_at="2026-07-13T13:00:00Z")  # only a captured
+    rows = {r["id"]: r for r in settled_bets(db)}
+    assert len(rows) == 2
+    assert rows[a]["closing_price"] == 0.56 and rows[a]["price"] == 0.50
+    assert rows[b]["closing_price"] is None                       # LEFT JOIN -> NULL outcome
+    assert [r["id"] for r in pending_captures(db)] == [b]         # a has a closing line; b is pending
 
 
 def test_last_opportunity_returns_latest_matching_or_none(db):

@@ -11,7 +11,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
     "PyYAML>=6.0",
-    "python-telegram-bot>=21.9",  # 21.9+ allows httpx 0.28 (older pins would downgrade httpx and break the Kalshi client tests)
+    "python-telegram-bot[job-queue]>=21.9",  # 21.9+ allows httpx 0.28; [job-queue] adds APScheduler for auto CLV capture
 ]
 
 [project.optional-dependencies]

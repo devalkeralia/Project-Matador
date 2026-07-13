@@ -16,16 +16,21 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from itertools import chain
 
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, filters
 
 from matador import storage
-from matador.alerts import format_abstain, format_alert, format_find, format_no_alert, format_recent, format_scan
+from matador.alerts import (
+    format_abstain, format_alert, format_close, format_find, format_no_alert,
+    format_recent, format_result, format_scan, format_stats,
+)
+from matador.clv import net_pnl, summarize
 from matador.engine import evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series
 from matador.kalshi.client import KalshiClient
-from matador.storage import last_opportunity, recent_opportunities
+from matador.storage import get_opportunity, last_opportunity, pending_captures, recent_opportunities, settled_bets
 
 PROD_BASE = "https://external-api.kalshi.com/trade-api/v2"  # public read-only; --demo uses cfg.kalshi_base_url
 
@@ -37,6 +42,9 @@ HELP = (
     "/find [atp|wta] — list open matches; checkable ones ranked by model strength\n"
     "/scan — sweep all open ATP/WTA markets for value\n"
     "/recent [n] — the last n logged opportunities (default 10)\n"
+    "/close [opp_id] — capture the closing line near match start (no id = all pending)\n"
+    "/result <opp_id> <win|loss> <fill_price> [contracts] — record how a trade went\n"
+    "/stats — hit rate, P&L, and closing-line value (the go-live metric)\n"
     "/notes — how to read an alert & the /check breakdown\n"
     "/help — this message"
 )
@@ -58,6 +66,12 @@ NOTES = (
     "• Value check — per side: my % − market price = raw gap, then − the Kalshi fee = net edge. "
     'A side only alerts at net edge ≥ +3%; if neither clears it, it\'s "no value".\n'
     "• Depth — resting order-book size; too thin and I won't alert even with an edge.\n\n"
+    "Tracking (the go-live test):\n"
+    "• /close [opp_id] — snapshot the market price at match start (the CLV baseline); run it near "
+    "the start. No id = capture all pending.\n"
+    "• /result <opp_id> <win|loss> <fill_price> [contracts] — record the outcome + your fill.\n"
+    "• /stats — hit rate, net P&L, and mean CLV with a 95% CI. CLV = closing price − your entry "
+    "(positive = you beat the close). Go-live needs the CI lower bound > 0 over 200+ bets.\n\n"
     "Signals only — I never place orders. You trade manually on Kalshi."
 )
 
@@ -170,6 +184,81 @@ def run_find(client, model, cfg, tours, top_n: int = _FIND_TOP_N) -> str:
     return format_find(matches, top_n)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def capture_close(client, conn, opp_id: int, *, source: str) -> dict:
+    """Snapshot the CLOSING LINE for a logged opportunity: the same-side market price now (run near
+    match start). Read-only against Kalshi + a paper log write; shared by /close and the auto-job.
+    Falls back to the last trade if that book side is empty. Returns a result dict for format_close."""
+    opp = get_opportunity(conn, opp_id)
+    if opp is None:
+        return {"opp_id": opp_id, "ok": False, "reason": "no_such_opp"}
+    side = opp["side"]
+    quotes = client.best_quotes(opp["market_ticker"])
+    price = quotes.yes_ask if side == "yes" else quotes.no_ask
+    if price is None:  # empty book on that side -> fall back to the last traded price
+        last = client.get_market(opp["market_ticker"]).last_price
+        if last is not None:
+            price = last if side == "yes" else round(1.0 - last, 4)
+    if price is None:
+        return {"opp_id": opp_id, "ok": False, "reason": "no_price"}
+    storage.record_outcome(conn, opp_id, closing_price=price, closing_captured_at=_now_iso(), closing_source=source)
+    return {"opp_id": opp_id, "ok": True, "side": side, "market_player": opp["market_player"],
+            "closing_price": price, "entry_price": opp["price"]}
+
+
+def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int | None, cfg) -> str:
+    """Record how a trade went: upsert the fill + outcome, computing net-of-fee P&L. `contracts`
+    defaults to the opportunity's suggested size."""
+    opp = get_opportunity(conn, opp_id)
+    if opp is None:
+        return f"No opportunity #{opp_id} to record."
+    contracts = contracts if contracts is not None else opp["contracts"]
+    pnl = net_pnl(result, fill_price, contracts, cfg.fee_coefficient)
+    storage.record_outcome(conn, opp_id, fill_price=fill_price, contracts_filled=contracts, result=result, pnl=pnl)
+    return format_result(opp, result, fill_price, contracts, pnl)
+
+
+def run_close(client, conn, opp_id: int | None = None) -> str:
+    """Capture the closing line for one opp, or (no id) every opportunity still missing one."""
+    if opp_id is not None:
+        return format_close(capture_close(client, conn, opp_id, source="manual"))
+    pend = pending_captures(conn)
+    if not pend:
+        return "Nothing to close — every logged opportunity already has a closing line."
+    results = [capture_close(client, conn, r["id"], source="manual") for r in pend]
+    return f"Captured {sum(r['ok'] for r in results)}/{len(results)} closing lines:\n" + "\n".join(
+        format_close(r) for r in results)
+
+
+def run_stats(conn, cfg) -> str:
+    return format_stats(summarize(settled_bets(conn), cfg.fee_coefficient))
+
+
+def parse_result_args(text: str) -> tuple[int, str, float, int | None] | None:
+    """Parse `/result` args '<opp_id> <win|loss> <fill_price> [contracts]' (non-raising). Accepts a
+    fill priced in dollars (0.54) or cents (54). Returns None on any malformed input."""
+    parts = text.split()
+    if len(parts) < 3:
+        return None
+    try:
+        opp_id = int(parts[0])
+        result = parts[1].lower()
+        fill_price = float(parts[2])
+        contracts = int(parts[3]) if len(parts) >= 4 else None
+    except ValueError:
+        return None
+    if result not in ("win", "loss"):
+        return None
+    if fill_price > 1:            # entered in cents, e.g. 54 -> 0.54
+        fill_price /= 100.0
+    if not (0.0 < fill_price < 1.0):
+        return None
+    return opp_id, result, fill_price, contracts
+
+
 # ---- resource wrappers (run inside the worker thread; open+close fresh client & sqlite conn) ----
 
 def _client(cfg, demo: bool) -> KalshiClient:
@@ -204,6 +293,19 @@ def _find_job(cfg, model, demo, tours) -> str:
         return run_find(client, model, cfg, tours)
 
 
+def _result_job(cfg, opp_id, result, fill_price, contracts) -> str:
+    return _with_conn(cfg, lambda conn: run_result(conn, opp_id, result, fill_price, contracts, cfg))
+
+
+def _close_job(cfg, demo, opp_id) -> str:
+    with _client(cfg, demo) as client:
+        return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id))
+
+
+def _stats_job(cfg) -> str:
+    return _with_conn(cfg, lambda conn: run_stats(conn, cfg))
+
+
 # ---- async handlers (thin: auth -> offload blocking job -> chunked reply) ----
 
 def _authed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -227,6 +329,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     a, b, tour = parsed
     text = await asyncio.to_thread(_check_job, bd["cfg"], bd["model"], bd["demo"], tour, a, b)
     await _reply_chunked(update, text)
+    schedule_pending_captures(context.application)  # auto-schedule a closing-line read for any new opp
 
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -236,6 +339,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Scanning open markets…")  # sweep can take a few seconds
     text = await asyncio.to_thread(_scan_job, bd["cfg"], bd["model"], bd["demo"], bd["cfg"].tours)
     await _reply_chunked(update, text)
+    schedule_pending_captures(context.application)  # auto-schedule closing-line reads for new opps
 
 
 async def cmd_find(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -259,6 +363,42 @@ async def cmd_recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _reply_chunked(update, text)
 
 
+async def cmd_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authed(update, context):
+        return
+    parsed = parse_result_args(" ".join(context.args))
+    if parsed is None:
+        await update.message.reply_text(
+            "Usage: /result <opp_id> <win|loss> <fill_price> [contracts]\ne.g. /result 1043 win 54 85")
+        return
+    opp_id, result, fill_price, contracts = parsed
+    text = await asyncio.to_thread(_result_job, context.bot_data["cfg"], opp_id, result, fill_price, contracts)
+    await _reply_chunked(update, text)
+
+
+async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authed(update, context):
+        return
+    bd = context.bot_data
+    opp_id = None
+    if context.args:
+        if not context.args[0].isdigit():
+            await update.message.reply_text("Usage: /close [opp_id]  (no id = capture all pending)")
+            return
+        opp_id = int(context.args[0])
+    else:
+        await update.message.reply_text("Capturing closing lines…")  # batch read; takes a moment
+    text = await asyncio.to_thread(_close_job, bd["cfg"], bd["demo"], opp_id)
+    await _reply_chunked(update, text)
+
+
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _authed(update, context):
+        return
+    text = await asyncio.to_thread(_stats_job, context.bot_data["cfg"])
+    await _reply_chunked(update, text)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _authed(update, context):
         return
@@ -271,16 +411,63 @@ async def cmd_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(NOTES)
 
 
+# ---- auto-scheduled closing-line capture (a one-shot read at each match start) ----
+
+def schedule_pending_captures(application: Application) -> int:
+    """Schedule a one-shot closing-line capture at each pending opportunity's match start. Called at
+    startup (reconciles across restarts) and after /check /scan (picks up freshly-logged opps).
+    Deduped by job name; a past-due start fires immediately (when=0). No-op without the job-queue
+    extra (manual /close still works). Returns the count newly scheduled."""
+    jq = application.job_queue
+    if jq is None:
+        return 0
+    cfg = application.bot_data["cfg"]
+    conn = storage.connect(cfg.db_path)
+    storage.init_db(conn)
+    try:
+        pend = pending_captures(conn)
+    finally:
+        conn.close()
+    now = datetime.now(timezone.utc)
+    scheduled = 0
+    for row in pend:
+        occ = row["occurrence_datetime"]
+        if not occ or jq.get_jobs_by_name(f"close:{row['id']}"):
+            continue  # no scheduled time -> manual /close only; or already scheduled
+        try:
+            start = datetime.fromisoformat(occ.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        jq.run_once(capture_job, when=max(0.0, (start - now).total_seconds()),
+                    name=f"close:{row['id']}", data=row["id"])
+        scheduled += 1
+    return scheduled
+
+
+async def capture_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """One-shot job: snapshot the closing line for one opportunity, then confirm to the owner chat."""
+    bd = context.bot_data
+    msg = await asyncio.to_thread(_close_job, bd["cfg"], bd["demo"], context.job.data)
+    await context.bot.send_message(chat_id=bd["chat_id"], text=msg)
+
+
+async def on_startup(application: Application) -> None:
+    schedule_pending_captures(application)
+
+
 def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, default_tour: str = "atp") -> Application:
     """Build the PTB app: stash shared read-only state in bot_data and register the commands,
     each gated to the owner's chat both by filters.Chat and the in-handler is_authorized check."""
-    app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(token).post_init(on_startup).build()
     app.bot_data.update(cfg=cfg, model=model, demo=demo, chat_id=int(chat_id), default_tour=default_tour)
     chat_filter = filters.Chat(chat_id=int(chat_id))
     app.add_handler(CommandHandler("check", cmd_check, filters=chat_filter))
     app.add_handler(CommandHandler(["find", "findmatch"], cmd_find, filters=chat_filter))
     app.add_handler(CommandHandler("scan", cmd_scan, filters=chat_filter))
     app.add_handler(CommandHandler("recent", cmd_recent, filters=chat_filter))
+    app.add_handler(CommandHandler("result", cmd_result, filters=chat_filter))
+    app.add_handler(CommandHandler("close", cmd_close, filters=chat_filter))
+    app.add_handler(CommandHandler("stats", cmd_stats, filters=chat_filter))
     app.add_handler(CommandHandler(["notes", "helpnotes"], cmd_notes, filters=chat_filter))
     app.add_handler(CommandHandler(["help", "start"], cmd_help, filters=chat_filter))
     return app

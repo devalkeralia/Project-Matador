@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**Phases 4–5 (Telegram bot + persistence/CLV) built — 208 tests passing.** An always-on bot
+**Phases 4–5 (Telegram bot + persistence/CLV) built, then review-hardened — 220 tests passing.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -68,6 +68,27 @@ list of deferred features, monitored gaps, and the validation gate.
 
 ## Changelog
 
+- **2026-07-13 — Review hardening (multi-agent review → fixes); 220 tests.** An 8-lens adversarial
+  review (42 agents) surfaced 31 verified issues; fixed the correctness / data-integrity / go-live-gate
+  ones before forward paper-testing:
+  - **Go-live gate is now NET of fees + a minimum effect size** (was gross CLV — could green-light a
+    fee-losing strategy). `clv.summarize` subtracts each bet's entry fee and clusters the bootstrap by
+    **trading day** (event-clustering was inert), requiring ≥30 day-clusters alongside ≥200 bets.
+  - **CLV measured on the closing MID vs the objective logged alert price** (fills feed P&L only) —
+    removes half-spread / entry-basis bias.
+  - **Closing-line capture hardened:** same-side mid; refuses when the market isn't active or we're
+    past scheduled start (marks *missed*, never fabricates); auto-capture fires a few minutes BEFORE
+    start and skips long-past — stops in-play/settled prices leaking the outcome into CLV.
+  - **`resolve_player`** requires an exact full-name match on same-surname collisions (fixed a *live*
+    bug — "Xiyu Wang" resolving to "Xinyu Wang") and abstains otherwise.
+  - **Thin players** flagged + Kelly-haircut, with CLV and calibration reports **segmented by
+    experience bucket** (exposes the 20–50-match overconfidence the aggregate hid).
+  - Surface **fallback to overall Elo** when a player has no history on the match surface (was a
+    phantom-1500 blend); exact **round-up Kalshi fee** in realized P&L; **`min_price` floor (0.10)**
+    blocks deep longshots; contracts-floor off-by-one; **`void`** result state; migration completeness
+    for pre-Phase-3 DBs. Model refreshed — calibration holds (ATP Brier 0.2175 / WTA 0.2165).
+  - *Deferred (documented):* the Slam H2H/outright double-count (day-clustering already mitigates the
+    CI risk); a full uncertainty-aware Kelly beyond the thin haircut.
 - **2026-07-13 — Phase 5 (persistence + CLV); 208 tests.** Turns the opportunity log into a
   measurable track record for the forward-CLV go-live test. New commands: **`/close [opp_id]`**
   snapshots the same-side closing line (a live read near match start — candlestick backfill is too

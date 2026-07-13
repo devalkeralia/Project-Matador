@@ -325,17 +325,34 @@ Grand Slam markets → persistence + CLV). What's left, by category:
 **Phase 5 — persistence + CLV — DONE (2026-07-13):**
 - `/close` (manual + auto-scheduled one-shot at match start), `/result`, `/stats`; `matador/clv.py`
   (CLV / net-P&L / cluster-bootstrap CI / summarize); `outcomes` upsert + `closing_captured_at`.
-- CLV = **same-side closing price − entry** (entry = fill if recorded, else the logged alert price),
-  reported GROSS; a **LIVE** read (candlestick backfill was ~25%/flaky — unusable forward). Go-live
-  gate = lower bound of a **cluster (by event) bootstrap 95% CI on mean CLV > 0**, ≥ 200 bets.
+- CLV baseline = closing **MID** (spread-neutral) vs the objective **logged alert price** (fills feed
+  P&L only); a **LIVE** capture (candlestick backfill was ~25%/flaky — unusable forward).
+
+**Review hardening — DONE (2026-07-13, from the 8-lens multi-agent review, 31 verified findings):**
+- **Go-live gate is NET-of-fee + a minimum effect size** (was gross CLV > 0, which could pass a
+  fee-losing strategy): subtract each bet's entry fee, then require the **day-clustered** bootstrap
+  95% CI lower bound > `min_effect_size` with ≥ 200 bets AND ≥ `min_clv_clusters` (30) distinct days.
+  (Event-clustering was inert — ~1 bet/event.)
+- **Capture guards:** same-side mid; refuse (mark *missed*, never fabricate) when the market isn't
+  active or we're past scheduled start; auto-capture fires a few min BEFORE start, skips long-past.
+- **`resolve_player`** exact full-name match on same-surname collisions (fixed the live Xiyu/Xinyu
+  Wang wrong-player bug), else abstain.
+- **Thin players** flagged + Kelly-haircut (`thin_kelly_haircut`); CLV + calibration **segmented by
+  experience bucket** (thin/mid/established) — surfaces the 20–50-match overconfidence.
+- Surface **fallback to overall Elo** on zero surface-history (was a phantom-1500 blend); exact
+  **round-up Kalshi fee** in realized P&L; **`min_price` floor 0.10**; contracts-floor off-by-one;
+  **`void`** result state; migration completeness for pre-Phase-3 DBs.
+- *Deferred (documented):* Slam H2H/outright double-count (day-clustering mitigates the CI risk);
+  full uncertainty-aware Kelly beyond the thin haircut.
 
 **Next — Phase 6: run the forward CLV paper-test** (the binding gate below). Accumulate ~200+ paper
-bets across live tournaments; `/stats` reports the gate.
+bets across live tournaments; `/stats` reports the net-of-fee gate.
 
 **Validation / go-live gate (binding):**
 - **A pre-match edge is NOT yet demonstrated** — `p_model` does not beat the sharp bookmaker close
   (Brier-optimal blend weight 0; ~−10.6% flat ROI on held-out). **Do not bet real money.**
-- Go-live bar: **positive forward CLV over ~200+ paper bets on Kalshi**, net of fees.
+- Go-live bar (implemented in `clv.summarize` / `/stats`): **net-of-fee CLV, day-clustered bootstrap
+  95% CI lower bound > `min_effect_size`, ≥ 200 bets, ≥ 30 day-clusters.** Do not bet real money until MET.
 - **Liquidity gate thresholds** — set to INTERIM values on 2026-07-13 (`min_liquidity: 500`,
   fill-driven for the $100 capped stake; `max_spread: 0.03`, just above the observed 2¢ p90) from a
   `scan.py dry-run` on a post-Wimbledon 250 slate (tight books: spread med ~1¢, depth med ~1.5k–2.7k

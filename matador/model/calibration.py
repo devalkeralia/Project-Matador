@@ -29,6 +29,7 @@ class Records:
     diff: np.ndarray      # blended rating diff, R_a - R_b
     y: np.ndarray         # 1 if player a won, else 0
     best_of: np.ndarray   # int (3 or 5)
+    experience: np.ndarray | None = None  # min prior-match count of the two players (for per-experience calibration)
 
 
 def walk_forward(
@@ -47,6 +48,7 @@ def walk_forward(
     diffs: list[float] = []
     ys: list[int] = []
     bos: list[int] = []
+    exps: list[int] = []
     for row in prepare_matches(matches).itertuples(index=False):
         w, l = row.winner_id, row.loser_id
         raw_bo = getattr(row, "best_of", None)
@@ -58,9 +60,11 @@ def walk_forward(
             dates.append(row.tourney_date)
             ys.append(1 if a == w else 0)
             bos.append(best_of)
+            exps.append(min(book.overall_count(w), book.overall_count(l)))  # pre-update prior-match counts
         md = row.tourney_date.date() if hasattr(row.tourney_date, "date") else row.tourney_date
         book.update(w, l, surface, md)
-    return Records(np.array(dates, dtype=object), np.array(diffs), np.array(ys, dtype=int), np.array(bos, dtype=int))
+    return Records(np.array(dates, dtype=object), np.array(diffs), np.array(ys, dtype=int),
+                   np.array(bos, dtype=int), np.array(exps, dtype=int))
 
 
 def brier_score(p: np.ndarray, y: np.ndarray) -> float:
@@ -111,6 +115,13 @@ def evaluate(records: Records, scales: dict[int, float]) -> dict:
         ("bo3", records.best_of == 3),
         ("bo5", records.best_of == 5),
     ]
+    if records.experience is not None:  # segment by player experience (surfaces thin-player miscalibration the aggregate hides)
+        exp = records.experience
+        buckets += [
+            ("exp<50", exp < 50),
+            ("exp50-199", (exp >= 50) & (exp < 200)),
+            ("exp200+", exp >= 200),
+        ]
     for label, mask in buckets:
         if not mask.any():
             continue
@@ -134,4 +145,5 @@ def split_by_date(records: Records, train_end: date) -> tuple[Records, Records]:
 
 
 def _subset(r: Records, m: np.ndarray) -> Records:
-    return Records(r.date[m], r.diff[m], r.y[m], r.best_of[m])
+    return Records(r.date[m], r.diff[m], r.y[m], r.best_of[m],
+                   None if r.experience is None else r.experience[m])

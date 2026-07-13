@@ -75,17 +75,38 @@ def test_win_probability_abstains_on_stale_ratings():
 def test_resolve_player():
     index = {
         "sinner_j": {100: PlayerInfo(100, "Jannik Sinner", date(2024, 6, 1), 40)},
+        "wang_x": {  # same surname + initial -- the collision that must NOT be guessed
+            "xiyu wang": PlayerInfo("xiyu wang", "Xiyu Wang", date(2026, 7, 1), 30),
+            "xinyu wang": PlayerInfo("xinyu wang", "Xinyu Wang", date(2026, 7, 1), 40),
+        },
         "williams_s": {
             1: PlayerInfo(1, "Serena Williams", date(2010, 6, 1), 50),
             2: PlayerInfo(2, "Steve Williams", date(2024, 6, 1), 30),
         },
     }
-    assert resolve_player(index, "Jannik Sinner") == 100
-    assert resolve_player(index, "Nobody Here") is None
-    # ambiguous key without a date -> abstain
+    assert resolve_player(index, "Jannik Sinner") == 100          # single candidate
+    assert resolve_player(index, "Nobody Here") is None           # unknown key
+    # collision resolved ONLY by an exact full-name match (the Xiyu/Xinyu live bug)
+    assert resolve_player(index, "Xiyu Wang") == "xiyu wang"
+    assert resolve_player(index, "Xinyu Wang") == "xinyu wang"
+    # ambiguous with no exact full-name match -> abstain (never guess), even with a date
     assert resolve_player(index, "S Williams") is None
-    # with a date, pick the id whose activity is nearest
-    assert resolve_player(index, "S Williams", event_date=date(2024, 5, 1)) == 2
+    assert resolve_player(index, "S Williams", event_date=date(2024, 5, 1)) is None
+
+
+def test_blended_rating_falls_back_to_overall_when_no_surface_history():
+    book = RatingBook()
+    book._overall[1] = 1700.0
+    # no (1, "Grass") rating -> use overall, NOT the phantom 0.3*1500 + 0.7*1700 drag
+    assert blended_rating(book, 1, "Grass", 0.3) == pytest.approx(1700.0)
+    book._surface[(1, "Grass")] = 1900.0  # now has grass history -> blends
+    assert blended_rating(book, 1, "Grass", 0.3) == pytest.approx(0.3 * 1900 + 0.7 * 1700)
+
+
+def test_win_probability_reports_min_experience():
+    book = _seasoned_book(matches=25)  # players 1 and 2 each have 25 prior matches
+    r = win_probability(book, 1, 2, "Hard", 3, surface_weight=0.7, scales={3: 400.0, 5: 400.0}, min_matches=20)
+    assert r.ok and r.experience == 25
 
 
 def test_win_probability_ok_with_fresh_ratings():

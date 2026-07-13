@@ -88,6 +88,12 @@ class RatingBook:
     def surface_count(self, pid: str, surface: str) -> int:
         return self._surface_n.get((pid, surface), 0)
 
+    def has_surface(self, pid: str, surface: str) -> bool:
+        """Whether this player has ANY rating history on the surface. True iff a (pid, surface)
+        rating exists -- works at predict time too, where only surfaces a player actually played
+        are rehydrated (surface_count is NOT persisted, so it can't be used for this)."""
+        return (pid, surface) in self._surface
+
     def last_played(self, pid: str) -> date | None:
         return self._last_date.get(pid)
 

@@ -25,7 +25,13 @@ def blended_rating(book: RatingBook, pid: str, surface: object, surface_weight: 
     them): a real edge vs the market survives, an overconfidence mirage does not."""
     overall = book.overall_rating(pid)
     surf = canonical_surface(surface)
-    blended = overall if surf is None else surface_weight * book.surface_rating(pid, surf) + (1.0 - surface_weight) * overall
+    # Fall back to overall Elo when the surface is unknown OR the player has NO history on it --
+    # otherwise a strong player with no (e.g.) grass matches gets dragged toward the 1500 default
+    # by a phantom surface rating (e.g. Wimbledon), understating them purely from missing data.
+    if surf is None or not book.has_surface(pid, surf):
+        blended = overall
+    else:
+        blended = surface_weight * book.surface_rating(pid, surf) + (1.0 - surface_weight) * overall
     if shrinkage_n0 > 0:
         n = book.overall_count(pid)
         blended = book.initial + (n / (n + shrinkage_n0)) * (blended - book.initial)
@@ -43,6 +49,7 @@ def prob_from_diff(diff: float, scale: float) -> float:
 class WinProbability:
     p: float | None   # P(player_a wins), or None when abstaining
     reason: str       # "ok", or the abstain reason
+    experience: int | None = None  # min prior-match count of the two players (thin-player flag/segmentation)
 
     @property
     def ok(self) -> bool:
@@ -87,31 +94,31 @@ def win_probability(
         blended_rating(book, player_a, surface, surface_weight, shrinkage_n0=shrinkage_n0)
         - blended_rating(book, player_b, surface, surface_weight, shrinkage_n0=shrinkage_n0)
     )
-    return WinProbability(prob_from_diff(diff, scale), "ok")
+    return WinProbability(prob_from_diff(diff, scale), "ok", experience=min(na, nb))
 
 
 def resolve_player(
     name_index: dict[str, dict[str, PlayerInfo]],
     name: str,
-    event_date: date | None = None,
+    event_date: date | None = None,  # retained for API stability; no longer used (see below)
 ) -> str | None:
     """canonical_key(name) -> a single player id, or None (unknown / ambiguous).
 
     Operates on a SINGLE tour's name index (the Model holds one per tour), so an ATP name
-    can never resolve to a WTA player or vice-versa. A key that maps to several ids is a
-    same-surname collision *within* that tour; disambiguate by picking the id whose
-    last-seen date is nearest event_date, or abstain (None) when no date is given.
+    can never resolve to a WTA player or vice-versa. A key mapping to several ids is a
+    same-surname+initial collision (e.g. Xiyu vs Xinyu Wang). Resolve it ONLY by an exact
+    normalized full-name match against the candidates' stored names; if the name doesn't pin
+    down exactly one, ABSTAIN (None) rather than guess -- a wrong player would feed a confident
+    but bogus probability into a real-money-bound bet. (An earlier nearest-last-date tiebreak
+    was a guess and is dropped.)
     """
-    from matador.names import canonical_key
+    from matador.names import canonical_key, normalize
 
     bucket = name_index.get(canonical_key(name))
     if not bucket:
         return None
     if len(bucket) == 1:
         return next(iter(bucket))
-    if event_date is None:
-        return None
-    return min(
-        bucket.values(),
-        key=lambda info: abs((info.last_date - event_date).days) if info.last_date else 10**9,
-    ).player_id
+    target = normalize(name)
+    matches = [pid for pid, info in bucket.items() if normalize(info.name) == target]
+    return matches[0] if len(matches) == 1 else None

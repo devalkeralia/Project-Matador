@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     trigger_reason TEXT CHECK (trigger_reason IN ('prematch_value', 'inplay_meanrev', 'situational')),
     occurrence_datetime TEXT,   -- scheduled match time; Phase 5/6 uses it to fetch the closing line for CLV
     flagged INTEGER DEFAULT 0,  -- adverse-selection: net edge >= adverse_gap (possible late news)
+    experience INTEGER,         -- min prior-match count of the two players (thin-player flag + CLV segmentation)
     score_state TEXT
 );
 
@@ -30,7 +31,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     closing_price REAL,            -- same-side market price at scheduled match start (the CLV baseline)
     closing_captured_at TEXT,      -- when the closing line was snapshotted (ISO)
     closing_source TEXT,           -- how it was captured: 'manual' (/close) or 'auto' (scheduled)
-    result TEXT CHECK (result IS NULL OR result IN ('win', 'loss')),
+    result TEXT CHECK (result IS NULL OR result IN ('win', 'loss', 'void')),  -- 'void' = walkover/refund (excluded from CLV, hit-rate, P&L)
     pnl REAL,
     clv REAL
 );
@@ -58,6 +59,7 @@ _OPPORTUNITY_COLUMNS = (
     "trigger_reason",
     "occurrence_datetime",
     "flagged",
+    "experience",
     "score_state",
 )
 
@@ -68,7 +70,10 @@ _OUTCOME_COLUMNS = (
 
 # Columns added after the first schema shipped -- ALTER them onto pre-existing DBs (see _ensure_columns).
 _MIGRATIONS = {
-    "opportunities": {"market_player": "TEXT"},
+    "opportunities": {
+        "event_ticker": "TEXT", "market_player": "TEXT", "occurrence_datetime": "TEXT",
+        "flagged": "INTEGER DEFAULT 0", "experience": "INTEGER",
+    },
     "outcomes": {"closing_captured_at": "TEXT", "closing_source": "TEXT"},
 }
 
@@ -84,7 +89,18 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     for table, columns in _MIGRATIONS.items():
         _ensure_columns(conn, table, columns)
+    _migrate_outcomes_result_check(conn)
     conn.commit()
+
+
+def _migrate_outcomes_result_check(conn: sqlite3.Connection) -> None:
+    """SQLite can't ALTER a CHECK, so a pre-'void' outcomes table would reject 'void' results.
+    If the stored table def lacks 'void' AND has no rows, rebuild it from SCHEMA (safe at 0 rows).
+    A populated old table is left as-is (rare; 'void' inserts would fail until a manual migration)."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='outcomes'").fetchone()
+    if row and "void" not in (row["sql"] or "") and conn.execute("SELECT count(*) FROM outcomes").fetchone()[0] == 0:
+        conn.execute("DROP TABLE outcomes")
+        conn.executescript(SCHEMA)  # CREATE IF NOT EXISTS: rebuilds outcomes, no-ops opportunities/index
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -167,5 +183,5 @@ def pending_captures(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT o.id, o.market_ticker, o.side, o.occurrence_datetime "
         "FROM opportunities o LEFT JOIN outcomes oc ON oc.opp_id = o.id "
-        "WHERE oc.closing_price IS NULL ORDER BY o.id"
+        "WHERE oc.closing_price IS NULL AND oc.closing_source IS NULL ORDER BY o.id"  # exclude already-attempted (missed) rows
     ).fetchall()

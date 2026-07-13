@@ -42,6 +42,7 @@ class Opportunity:
     trigger_reason: str
     occurrence_datetime: str | None   # scheduled match time; Phase 5/6 fetches the closing line for CLV
     flagged: bool                      # adverse-selection: net edge >= adverse_gap
+    experience: int | None             # min prior-match count of the two players (thin-player flag + CLV segmentation)
     score_state: str | None
 
 
@@ -133,7 +134,11 @@ def evaluate_resolution(
         depth=round(depth_at_ask(orderbook, "yes", quotes.yes_ask), 2) if quotes.yes_ask is not None else None,
     )
 
-    edge = evaluate_market(wp.p, quotes.yes_ask, quotes.no_ask, cfg)
+    # Uncertainty-aware sizing: haircut the Kelly fraction for THIN players (their Elo is
+    # overconfident), so a real-but-uncertain edge is sized down rather than suppressed.
+    thin = wp.experience is not None and wp.experience < cfg.thin_matches
+    kf = cfg.kelly_fraction * cfg.thin_kelly_haircut if thin else cfg.kelly_fraction
+    edge = evaluate_market(wp.p, quotes.yes_ask, quotes.no_ask, cfg, kelly_fraction=kf)
     if edge is None:
         return _abstain("no_edge", diag)
 
@@ -165,6 +170,7 @@ def evaluate_resolution(
         trigger_reason="prematch_value",
         occurrence_datetime=resolution.occurrence_datetime,
         flagged=flagged,
+        experience=wp.experience,
         score_state=None,
     )
     return EvalResult("alert", "ok", opp, flagged=flagged)
@@ -337,5 +343,6 @@ def log_opportunity(conn, opp: Opportunity, *, force: bool = False) -> int | Non
         side=opp.side, price=opp.price,
         p_model=opp.p_model, net_edge=opp.net_edge, suggested_stake=opp.suggested_stake,
         contracts=opp.contracts, liquidity=opp.liquidity, trigger_reason=opp.trigger_reason,
-        occurrence_datetime=opp.occurrence_datetime, flagged=int(opp.flagged), score_state=opp.score_state,
+        occurrence_datetime=opp.occurrence_datetime, flagged=int(opp.flagged), experience=opp.experience,
+        score_state=opp.score_state,
     )

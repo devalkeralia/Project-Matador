@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from itertools import chain
 
 from telegram import Update
@@ -79,6 +79,8 @@ _NOTES_FOOTER = "\n\nℹ️ /notes — how to read this message"
 _RECENT_DEFAULT = 10
 _RECENT_MAX = 50
 _FIND_TOP_N = 5
+CAPTURE_BEFORE_START = timedelta(minutes=5)   # auto-capture this long BEFORE scheduled start (guaranteed pre-match)
+CAPTURE_LATE_GRACE = timedelta(minutes=15)    # refuse a capture more than this past scheduled start (Kalshi trades in-play -> price would no longer be the pre-match CLOSE)
 
 
 # ---- pure helpers (testable) ----
@@ -188,25 +190,51 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def capture_close(client, conn, opp_id: int, *, source: str) -> dict:
-    """Snapshot the CLOSING LINE for a logged opportunity: the same-side market price now (run near
-    match start). Read-only against Kalshi + a paper log write; shared by /close and the auto-job.
-    Falls back to the last trade if that book side is empty. Returns a result dict for format_close."""
+def _parse_dt(iso) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)  # a naive string would break aware-vs-naive compares
+
+
+def _same_side_mid(quotes, side: str) -> float | None:
+    """The taken side's MID (bid+ask)/2 -- spread-neutral, the honest CLV baseline. None if that
+    side of the book isn't two-sided."""
+    bid, ask = (quotes.yes_bid, quotes.yes_ask) if side == "yes" else (quotes.no_bid, quotes.no_ask)
+    return None if bid is None or ask is None else round((bid + ask) / 2.0, 4)
+
+
+def _mark_missed(conn, opp_id: int, reason: str, source: str) -> None:
+    """Record that a closing-line capture was NOT taken cleanly (leaves closing_price NULL so the
+    row is excluded from CLV and not re-scheduled). Better a lost datapoint than a poisoned one."""
+    storage.record_outcome(conn, opp_id, closing_captured_at=_now_iso(), closing_source=f"missed:{reason}[{source}]")
+
+
+def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | None = None) -> dict:
+    """Snapshot the CLOSING LINE (same-side MID) for a logged opportunity -- the PRE-match price.
+    Read-only against Kalshi + a paper log write; shared by /close and the auto-job. Refuses (marks
+    'missed', never fabricates) when the market is not active or we're materially past scheduled
+    start (Kalshi trades in-play, so a late snapshot would leak the outcome into CLV)."""
     opp = get_opportunity(conn, opp_id)
     if opp is None:
         return {"opp_id": opp_id, "ok": False, "reason": "no_such_opp"}
-    side = opp["side"]
-    quotes = client.best_quotes(opp["market_ticker"])
-    price = quotes.yes_ask if side == "yes" else quotes.no_ask
-    if price is None:  # empty book on that side -> fall back to the last traded price
-        last = client.get_market(opp["market_ticker"]).last_price
-        if last is not None:
-            price = last if side == "yes" else round(1.0 - last, 4)
-    if price is None:
+    now = now or datetime.now(timezone.utc)
+    start = _parse_dt(opp["occurrence_datetime"])
+    if start is not None and now > start + CAPTURE_LATE_GRACE:
+        _mark_missed(conn, opp_id, "late", source)
+        return {"opp_id": opp_id, "ok": False, "reason": "too_late"}
+    market = client.get_market(opp["market_ticker"])
+    if market.status not in ("active", "open"):
+        _mark_missed(conn, opp_id, market.status or "unknown", source)
+        return {"opp_id": opp_id, "ok": False, "reason": "not_active", "status": market.status}
+    mid = _same_side_mid(client.best_quotes(opp["market_ticker"]), opp["side"])
+    if mid is None:
+        _mark_missed(conn, opp_id, "no_two_sided_book", source)
         return {"opp_id": opp_id, "ok": False, "reason": "no_price"}
-    storage.record_outcome(conn, opp_id, closing_price=price, closing_captured_at=_now_iso(), closing_source=source)
-    return {"opp_id": opp_id, "ok": True, "side": side, "market_player": opp["market_player"],
-            "closing_price": price, "entry_price": opp["price"]}
+    storage.record_outcome(conn, opp_id, closing_price=mid, closing_captured_at=now.isoformat(timespec="seconds"), closing_source=source)
+    return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"],
+            "closing_price": mid, "entry_price": opp["price"]}
 
 
 def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int | None, cfg) -> str:
@@ -215,6 +243,9 @@ def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int
     opp = get_opportunity(conn, opp_id)
     if opp is None:
         return f"No opportunity #{opp_id} to record."
+    if result == "void":  # walkover / refund -- excluded from CLV, hit-rate, and P&L
+        storage.record_outcome(conn, opp_id, result="void", pnl=0.0)
+        return f"Recorded opp #{opp_id} as VOID (walkover/refund) — excluded from stats."
     contracts = contracts if contracts is not None else opp["contracts"]
     pnl = net_pnl(result, fill_price, contracts, cfg.fee_coefficient)
     storage.record_outcome(conn, opp_id, fill_price=fill_price, contracts_filled=contracts, result=result, pnl=pnl)
@@ -234,23 +265,30 @@ def run_close(client, conn, opp_id: int | None = None) -> str:
 
 
 def run_stats(conn, cfg) -> str:
-    return format_stats(summarize(settled_bets(conn), cfg.fee_coefficient))
+    return format_stats(summarize(settled_bets(conn), cfg))
 
 
-def parse_result_args(text: str) -> tuple[int, str, float, int | None] | None:
-    """Parse `/result` args '<opp_id> <win|loss> <fill_price> [contracts]' (non-raising). Accepts a
-    fill priced in dollars (0.54) or cents (54). Returns None on any malformed input."""
+def parse_result_args(text: str) -> tuple[int, str, float | None, int | None] | None:
+    """Parse `/result` args '<opp_id> <win|loss> <fill_price> [contracts]' or '<opp_id> void'
+    (non-raising). Fill accepts dollars (0.54) or cents (54). Returns None on malformed input."""
     parts = text.split()
-    if len(parts) < 3:
+    if len(parts) < 2:
         return None
     try:
         opp_id = int(parts[0])
-        result = parts[1].lower()
+    except ValueError:
+        return None
+    result = parts[1].lower()
+    if result not in ("win", "loss", "void"):
+        return None
+    if result == "void":
+        return opp_id, "void", None, None
+    if len(parts) < 3:
+        return None
+    try:
         fill_price = float(parts[2])
         contracts = int(parts[3]) if len(parts) >= 4 else None
     except ValueError:
-        return None
-    if result not in ("win", "loss"):
         return None
     if fill_price > 1:            # entered in cents, e.g. 54 -> 0.54
         fill_price /= 100.0
@@ -300,6 +338,12 @@ def _result_job(cfg, opp_id, result, fill_price, contracts) -> str:
 def _close_job(cfg, demo, opp_id) -> str:
     with _client(cfg, demo) as client:
         return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id))
+
+
+def _auto_capture_job(cfg, demo, opp_id) -> str:
+    """The scheduled (auto) capture path -- same as /close but tags the source 'auto'."""
+    with _client(cfg, demo) as client:
+        return _with_conn(cfg, lambda conn: format_close(capture_close(client, conn, opp_id, source="auto")))
 
 
 def _stats_job(cfg) -> str:
@@ -422,32 +466,31 @@ def schedule_pending_captures(application: Application) -> int:
     if jq is None:
         return 0
     cfg = application.bot_data["cfg"]
+    now = datetime.now(timezone.utc)
     conn = storage.connect(cfg.db_path)
     storage.init_db(conn)
+    scheduled = 0
     try:
-        pend = pending_captures(conn)
+        for row in pending_captures(conn):
+            start = _parse_dt(row["occurrence_datetime"])
+            if start is None or jq.get_jobs_by_name(f"close:{row['id']}"):
+                continue  # untimed -> manual /close only; or already scheduled
+            if now > start + CAPTURE_LATE_GRACE:  # too late for a clean pre-match snapshot -> mark missed once
+                _mark_missed(conn, row["id"], "stale", "auto")
+                continue
+            # fire a few minutes BEFORE start so the snapshot is pre-match (not in-play)
+            jq.run_once(capture_job, when=max(0.0, (start - CAPTURE_BEFORE_START - now).total_seconds()),
+                        name=f"close:{row['id']}", data=row["id"])
+            scheduled += 1
     finally:
         conn.close()
-    now = datetime.now(timezone.utc)
-    scheduled = 0
-    for row in pend:
-        occ = row["occurrence_datetime"]
-        if not occ or jq.get_jobs_by_name(f"close:{row['id']}"):
-            continue  # no scheduled time -> manual /close only; or already scheduled
-        try:
-            start = datetime.fromisoformat(occ.replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        jq.run_once(capture_job, when=max(0.0, (start - now).total_seconds()),
-                    name=f"close:{row['id']}", data=row["id"])
-        scheduled += 1
     return scheduled
 
 
 async def capture_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """One-shot job: snapshot the closing line for one opportunity, then confirm to the owner chat."""
     bd = context.bot_data
-    msg = await asyncio.to_thread(_close_job, bd["cfg"], bd["demo"], context.job.data)
+    msg = await asyncio.to_thread(_auto_capture_job, bd["cfg"], bd["demo"], context.job.data)
     await context.bot.send_message(chat_id=bd["chat_id"], text=msg)
 
 

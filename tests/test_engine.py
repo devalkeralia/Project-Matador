@@ -76,6 +76,14 @@ def test_flagged_when_edge_is_implausibly_large():
     assert r.status == "alert" and r.flagged is True  # huge gap -> adverse-selection flag
 
 
+def test_thin_player_gets_a_kelly_haircut_and_records_experience():
+    thin = _eval(FakeModel(WinProbability(0.70, "ok", experience=30)), LIQUID_BOOK, make_cfg())
+    established = _eval(FakeModel(WinProbability(0.70, "ok", experience=100)), LIQUID_BOOK, make_cfg())
+    assert thin.status == "alert" and established.status == "alert"
+    assert thin.opportunity.experience == 30
+    assert thin.opportunity.suggested_stake < established.opportunity.suggested_stake  # haircut applied
+
+
 def test_abstain_empty_book():
     r = _eval(FakeModel(WinProbability(0.60, "ok")), book([], []), make_cfg())
     assert r.status == "abstain" and r.reason == "empty_book"
@@ -128,7 +136,8 @@ def _opp(**overrides) -> Opportunity:
         market_ticker="KXATPMATCH-26JUL04AB-A", event_ticker="KXATPMATCH-26JUL04AB",
         market_player="Player Aaa", side="yes", price=0.50,
         p_model=0.60, net_edge=0.08, suggested_stake=40.0, contracts=80, liquidity=50.0,
-        trigger_reason="prematch_value", occurrence_datetime="2026-07-04T13:00:00Z", flagged=False, score_state=None,
+        trigger_reason="prematch_value", occurrence_datetime="2026-07-04T13:00:00Z", flagged=False,
+        experience=100, score_state=None,
     )
     fields.update(overrides)
     return Opportunity(**fields)

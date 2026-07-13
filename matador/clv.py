@@ -2,38 +2,41 @@
 
 Pure math over the opportunities-x-outcomes rows (matador.storage.settled_bets) -- no I/O -- so
 /stats and any future backtest compute the same numbers. CLV is the project's binding go-live
-metric: did we get a better price than the market's close?
+metric: after fees, did we get a better price than the market's close?
 
-  clv          = closing_price - entry_price          # same-side, GROSS (fees tracked separately)
-  entry_price  = actual fill_price if recorded, else the logged alert price
-  net P&L      = contracts*((1 if win else 0) - fill) - fee_coefficient*fill*(1-fill)*contracts
-  go-live gate = lower bound of a cluster (by event) bootstrap 95% CI on mean CLV > 0, >= 200 bets
+  entry        = the objective LOGGED ALERT price (user-entered fills feed P&L only, not CLV)
+  gross clv    = closing_mid - entry                          # spread-neutral, on the taken side
+  net clv      = gross clv - fee_coefficient*entry*(1-entry)  # subtract the per-contract entry fee
+  net P&L      = contracts*((1 if win else 0) - fill) - kalshi_fee(fill, contracts)   # exact round-up
+  go-live gate = net-CLV cluster (by trading DAY) bootstrap 95% CI lower bound > min_effect_size,
+                 with >= 200 bets AND >= min_clv_clusters distinct days
 
-The bootstrap clusters by event because the two contracts of one match yield correlated bets;
-resampling whole events (not individual bets) keeps the CI honest.
+Clustering is by DAY, not event: correlated model bias lives across a day's matches, and there's
+~one bet per event so event-clustering was inert. void (walkover/refund) rows are excluded entirely.
 """
 from __future__ import annotations
 
 import numpy as np
 
-MIN_BETS = 200  # go-live floor on the number of CLV observations
+from matador.edge import kalshi_fee
+
+MIN_BETS = 200        # go-live floor on the number of CLV observations
+_ESTABLISHED = 200    # experience boundary for the 'established' segmentation bucket
 
 
 def clv(entry_price: float, closing_price: float) -> float:
-    """Same-side CLV (gross): positive = we entered at a better price than the close."""
+    """Same-side GROSS CLV: positive = we entered at a better price than the close."""
     return closing_price - entry_price
 
 
 def net_pnl(result: str, fill_price: float, contracts: int, fee_coefficient: float) -> float:
-    """Realized $ P&L of a settled position, net of the Kalshi fee (same fee basis as edge.net_edge)."""
+    """Realized $ P&L of a settled position, net of the exact (round-up) Kalshi fee."""
     payoff = contracts * (1.0 if result == "win" else 0.0)
-    cost = contracts * fill_price
-    fee = fee_coefficient * fill_price * (1.0 - fill_price) * contracts
-    return payoff - cost - fee
+    return payoff - contracts * fill_price - kalshi_fee(fill_price, contracts, fee_coefficient)
 
 
 def bootstrap_mean_ci(values, clusters, *, level: float = 0.95, n_boot: int = 10000, seed: int = 0):
-    """Percentile CI for the mean of `values`, resampling whole CLUSTERS (e.g. events) with
+    """Percentile CI for the mean of `values`, resampling whole CLUSTERS (e.g. trading days) with
     replacement so intra-cluster correlation doesn't shrink the interval. Returns (lo, hi), or
     None if there are no values. Deterministic for a given seed."""
     values = np.asarray(values, dtype=float)
@@ -53,25 +56,51 @@ def bootstrap_mean_ci(values, clusters, *, level: float = 0.95, n_boot: int = 10
     return float(np.quantile(means, alpha)), float(np.quantile(means, 1.0 - alpha))
 
 
-def summarize(bets, fee_coefficient: float, *, seed: int = 0) -> dict:
-    """Aggregate settled_bets rows into the /stats figures: hit rate, net P&L / ROI, mean CLV +
-    its cluster-bootstrap 95% CI, and the go-live flag. CLV uses the actual fill when recorded,
-    else the logged alert price; P&L needs a recorded fill + contracts + result."""
-    clv_values, clv_clusters = [], []
+def _experience_bucket(exp, thin: int) -> str:
+    if exp is None:
+        return "unknown"
+    if exp < thin:
+        return f"thin(<{thin})"
+    if exp < _ESTABLISHED:
+        return f"mid({thin}-{_ESTABLISHED})"
+    return f"established({_ESTABLISHED}+)"
+
+
+def summarize(bets, cfg, *, seed: int = 0) -> dict:
+    """Aggregate settled_bets rows into the /stats figures: hit rate, net P&L / ROI, mean NET CLV
+    + its day-cluster bootstrap 95% CI, per-experience segmentation, and the go-live flag. CLV uses
+    the objective logged alert price as entry; P&L uses the recorded fill. 'void' rows are excluded."""
+    fee = cfg.fee_coefficient
+    rows = []  # (net_clv, gross_clv, day, experience) per CLV-eligible bet
     total_pnl = staked = 0.0
     wins = results = 0
     for b in bets:
-        entry = b["fill_price"] if b["fill_price"] is not None else b["price"]
+        res = b["result"]
+        if res == "void":
+            continue  # walkover/refund -- excluded from every metric
+        entry = b["price"]
         if b["closing_price"] is not None and entry is not None:
-            clv_values.append(clv(entry, b["closing_price"]))
-            clv_clusters.append(b["event_ticker"] or b["market_ticker"])
-        if b["result"] is not None:
+            gross = clv(entry, b["closing_price"])
+            net = gross - fee * entry * (1.0 - entry)  # per-contract entry-fee drag, same price units
+            day = (b["occurrence_datetime"] or b["ts"] or "")[:10]
+            rows.append((net, gross, day, b["experience"]))
+        if res in ("win", "loss"):
             results += 1
-            wins += 1 if b["result"] == "win" else 0
+            wins += 1 if res == "win" else 0
             if b["fill_price"] is not None and b["contracts_filled"]:
-                total_pnl += net_pnl(b["result"], b["fill_price"], b["contracts_filled"], fee_coefficient)
+                total_pnl += net_pnl(res, b["fill_price"], b["contracts_filled"], fee)
                 staked += b["fill_price"] * b["contracts_filled"]
-    ci = bootstrap_mean_ci(clv_values, clv_clusters, seed=seed) if clv_values else None
+
+    net_clvs = [r[0] for r in rows]
+    days = [r[2] for r in rows]
+    n_clusters = len({d for d in days})
+    ci = bootstrap_mean_ci(net_clvs, days, seed=seed) if net_clvs else None
+    go_live = bool(
+        ci and ci[0] > cfg.min_effect_size and len(net_clvs) >= MIN_BETS and n_clusters >= cfg.min_clv_clusters
+    )
+    buckets: dict = {}
+    for net, _gross, _day, exp in rows:
+        buckets.setdefault(_experience_bucket(exp, cfg.thin_matches), []).append(net)
     return {
         "n_opportunities": len(bets),
         "n_results": results,
@@ -80,8 +109,13 @@ def summarize(bets, fee_coefficient: float, *, seed: int = 0) -> dict:
         "total_pnl": total_pnl,
         "staked": staked,
         "roi": (total_pnl / staked) if staked else None,
-        "n_clv": len(clv_values),
-        "mean_clv": (float(np.mean(clv_values)) if clv_values else None),
+        "n_clv": len(net_clvs),
+        "n_clusters": n_clusters,
+        "mean_clv": (float(np.mean(net_clvs)) if net_clvs else None),                 # NET -- the gate metric
+        "mean_gross_clv": (float(np.mean([r[1] for r in rows])) if rows else None),   # informational
         "clv_ci": ci,
-        "go_live": bool(ci and ci[0] > 0 and len(clv_values) >= MIN_BETS),
+        "min_effect_size": cfg.min_effect_size,
+        "min_clusters": cfg.min_clv_clusters,
+        "go_live": go_live,
+        "buckets": {lab: {"n": len(v), "mean_clv": float(np.mean(v))} for lab, v in buckets.items()},
     }

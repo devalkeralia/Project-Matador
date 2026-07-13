@@ -137,11 +137,25 @@ def test_init_db_migrates_missing_columns_idempotently():
     )
     conn.execute("INSERT INTO outcomes (opp_id, closing_price) VALUES (1, 0.5)")
     init_db(conn)  # should ALTER-add the missing columns
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(outcomes)")}
-    assert {"closing_captured_at", "closing_source"} <= cols
-    assert "market_player" in {r["name"] for r in conn.execute("PRAGMA table_info(opportunities)")}
+    assert {"closing_captured_at", "closing_source"} <= {r["name"] for r in conn.execute("PRAGMA table_info(outcomes)")}
+    opp_cols = {r["name"] for r in conn.execute("PRAGMA table_info(opportunities)")}
+    assert {"market_player", "event_ticker", "occurrence_datetime", "flagged", "experience"} <= opp_cols  # full set
     assert conn.execute("SELECT closing_price FROM outcomes WHERE opp_id=1").fetchone()[0] == 0.5  # data preserved
     init_db(conn)  # idempotent -- re-running must not error
+    conn.close()
+
+
+def test_void_result_migration_rebuilds_old_outcomes_check():
+    conn = connect(":memory:")  # pre-'void' schema: result CHECK allows only win/loss, 0 rows
+    conn.executescript(
+        "CREATE TABLE opportunities (id INTEGER PRIMARY KEY, market_ticker TEXT NOT NULL, side TEXT);"
+        "CREATE TABLE outcomes (opp_id INTEGER PRIMARY KEY REFERENCES opportunities(id), "
+        "  result TEXT CHECK (result IS NULL OR result IN ('win','loss')));"
+    )
+    init_db(conn)  # 0 rows -> safe to rebuild outcomes with the 'void'-allowing CHECK
+    conn.execute("INSERT INTO opportunities (id, market_ticker, side) VALUES (1, 'M', 'yes')")
+    record_outcome(conn, 1, result="void")  # would have violated the old CHECK
+    assert conn.execute("SELECT result FROM outcomes WHERE opp_id=1").fetchone()[0] == "void"
     conn.close()
 
 

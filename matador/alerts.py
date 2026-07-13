@@ -203,7 +203,9 @@ def format_close(r: dict) -> str:
     if not r["ok"]:
         return {
             "no_such_opp": f"No opportunity #{r['opp_id']}.",
-            "no_price": f"Couldn't read a closing price for opp #{r['opp_id']} (empty book / no last trade).",
+            "no_price": f"Couldn't read a two-sided price for opp #{r['opp_id']} — marked missed (excluded from CLV).",
+            "too_late": f"Opp #{r['opp_id']} is past its scheduled start — too late for a clean pre-match close; marked missed.",
+            "not_active": f"Opp #{r['opp_id']}'s market isn't active ({r.get('status')}) — marked missed (excluded from CLV).",
         }.get(r["reason"], f"Close failed for opp #{r['opp_id']}: {r['reason']}")
     delta_cents = (r["closing_price"] - r["entry_price"]) * 100
     return (
@@ -222,12 +224,19 @@ def format_stats(s: dict) -> str:
         lines.append(f"Net P&L: ${s['total_pnl']:+.2f} on ${s['staked']:.0f} staked{roi}")
     else:
         lines.append("Trades recorded: none yet (use /result)")
-    lines += ["", "Closing-line value (the go-live metric):"]
+    lines += ["", "Closing-line value (the go-live metric, NET of fees):"]
     if s["n_clv"]:
         lo, hi = s["clv_ci"]
-        lines.append(f"  {s['n_clv']} bet(s) with a captured close")
-        lines.append(f"  Mean CLV {s['mean_clv']:+.1%} gross · 95% CI [{lo:+.1%}, {hi:+.1%}]")
-        gate = "✅ MET" if s["go_live"] else f"not yet — need CI lower bound > 0 and ≥ {MIN_BETS} bets ({s['n_clv']}/{MIN_BETS})"
+        lines.append(f"  {s['n_clv']} bet(s) over {s['n_clusters']} day(s)")
+        lines.append(f"  Mean net CLV {s['mean_clv']:+.1%} (gross {s['mean_gross_clv']:+.1%}) · 95% CI [{lo:+.1%}, {hi:+.1%}]")
+        if s["buckets"]:
+            seg = ", ".join(f"{lab} {v['mean_clv']:+.1%} (n={v['n']})" for lab, v in sorted(s["buckets"].items()))
+            lines.append(f"  by experience: {seg}")
+        if s["go_live"]:
+            gate = "✅ MET"
+        else:
+            gate = (f"not yet — need net-CLV CI lower bound > {s['min_effect_size']:+.1%}, "
+                    f"≥ {MIN_BETS} bets ({s['n_clv']}/{MIN_BETS}), ≥ {s['min_clusters']} days ({s['n_clusters']}/{s['min_clusters']})")
         lines.append(f"  Go-live gate: {gate}")
     else:
         lines.append("  No closing lines captured yet (use /close near match start).")

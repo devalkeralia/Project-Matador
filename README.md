@@ -18,11 +18,14 @@ match start), **`/result`** records outcomes, **`/stats`** reports hit rate, P&L
 value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, `/notes`, `/help`.
 On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
 (data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
-/ WTA 0.2164; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure is now
-built (237 tests):** always-on Docker deployment, a scheduled systematic scan (unbiased sampling), a
-postponement-aware closing-line capture, and an offline `clv_report.py` — everything needed to run the
-**forward CLV paper-test** (the go-live bar) unattended. **v1 = pre-match value alerts only** (in-play
-mean-reversion pilot = v2).
+/ WTA 0.2165; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure + a
+holistic review-hardening pass are built (243 tests):** always-on Docker deployment, a scheduled
+systematic scan (unbiased sampling), a postponement-aware **fail-closed** closing-line capture, an
+offline `clv_report.py`, and a **hardened go-live gate** (ISO-week clusters, BCa interval, realized-ROI
++ capture-health co-gates, thin-player abstain, flat paper stakes). **One prerequisite remains before
+the gate can mean +EV: a live sharp-line reference** — the current CLV-vs-Kalshi-close gate can't
+separate a soft Kalshi close from model error (see the runbook). **v1 = pre-match value alerts only**
+(in-play mean-reversion pilot = v2).
 
 _Last updated: 2026-07-14_
 
@@ -106,8 +109,9 @@ watchdog in v1.
 pending closing-line captures are rebuilt from the DB on startup, so none are lost:
 
 ```bash
-# crontab -e  (Mondays 06:00) — run from the repo root
-0 6 * * 1  cd /path/to/Tennis\ Betting && .venv/bin/python scripts/prepare_matches.py && \
+# crontab -e  (Mondays 06:00) — run from the repo root. --fetch PULLS the latest LuckyLoser91 feed
+# (without it the cron just re-processes stale CSVs and the model freezes for the whole test).
+0 6 * * 1  cd /path/to/Tennis\ Betting && .venv/bin/python scripts/prepare_matches.py --fetch && \
            .venv/bin/python scripts/build_ratings.py && docker compose restart matador
 ```
 
@@ -120,6 +124,13 @@ pending closing-line captures are rebuilt from the DB on startup, so none are lo
 
 The binding go-live gate. **Start at the August Masters main draw** (Toronto/Cincinnati) — liquid
 markets where the gate thresholds are meaningful.
+
+> **Prerequisite before the gate can authorize real money — a sharp-line reference.** The gate below
+> compares our entry to Kalshi's *own* closing MID, which can't separate "Kalshi was soft (real edge)"
+> from "our model was wrong and the close corrected away from us" — and the model doesn't beat sharp
+> lines. Wire a live sharp odds source (e.g. Pinnacle via [the-odds-api.com](https://the-odds-api.com),
+> Shin-devigged) captured at alert + close and gate on beating *that*. Until then, run the paper-test to
+> exercise the pipeline and study CLV/ROI, but treat a "MET" as **necessary, not sufficient**.
 
 1. **Recalibrate the liquidity gate first:** `.venv/bin/python scripts/scan.py dry-run --tour atp --tour wta`
    (read-only). It prints the depth/spread distribution per tour **and per tier** (H2H + outright
@@ -136,14 +147,40 @@ markets where the gate thresholds are meaningful.
    and `.venv/bin/python scripts/clv_report.py` (segments net CLV by tour / price band / flag / week).
    - **Watch:** capture health (a high `missed` count = a thin/biased sample — investigate before
      trusting the number); `n` → 200; day-clusters → 30; the net-CLV 95% CI lower bound.
-   - **MET** (`/stats` shows *Go-live gate: ✅ MET*): net-of-fee day-clustered bootstrap 95% CI lower
-     bound `> min_effect_size`, `n ≥ 200`, `≥ 30` day-clusters. Only then consider real money.
+   - **MET** (`/stats` shows *Go-live gate: ✅ MET*): net-of-fee ISO-**week**-clustered **BCa** 95% CI
+     lower bound `> min_effect_size` (0.015), `n ≥ 200`, `≥ 12` week-clusters, **realized net-ROI ≥ 0**,
+     **missed-capture rate ≤ 30%** — AND the sharp-line prerequisite above. Only then consider real money.
    - **Flat** (enough sample, CI straddles/below the effect size): the model has no Kalshi edge. The
      first documented lever is **recency / time-decayed Elo** (see DESIGN-DECISIONS "Open items") —
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
 
+- **2026-07-14 — Holistic review-hardening (15-agent whole-project review → fixes); 243 tests.** A
+  full-project review flagged that the paper-test, as built, could green-light real money on noise.
+  Fixes:
+  - **Go-live gate hardened** (`clv.summarize`): clusters by **ISO week** (day was too fine — intra-
+    tournament correlation was shrinking the CI), a **BCa** bootstrap interval (not percentile) for the
+    skewed CLV, plus two co-gates — **realized net-ROI ≥ 0** and a **max missed-capture rate** — and a
+    higher effect-size bar (0.015, sized to cover slippage + the per-order round-up fee + the ask-vs-mid
+    basis). The TRUE go-live path is now unit-tested.
+  - **Closing-line capture is fail-closed:** if a match's scheduled start is unknown it's marked *missed*
+    rather than risk snapshotting an in-play price (Kalshi trades tennis in-play, so `status` alone can't
+    tell); grace tightened to 5 min; `/close <id> pre` lets the owner confirm a genuinely-pre-match untimed
+    market; auto-capture retries a transient Kalshi error instead of silently losing the datapoint.
+  - **Weekly model refresh actually fetches** (`prepare_matches.py --fetch`) — the documented cron had been
+    re-processing stale CSVs, freezing the model. Player ids now fold hyphen/space variants (one player was
+    split across two Elo entities). Calibration unchanged (ATP 0.2175 / WTA 0.2165).
+  - **Model/sizing tightened:** thin players (< `thin_matches`) now **abstain** (their Elo is overconfident
+    and they were the worst bets vs the sharp close) rather than being haircut-and-alerted; optional **flat
+    paper stakes** (CLV is stake-independent — don't prime Kelly-sized real bets on an unvalidated model);
+    an **aggregate open-exposure** warning.
+  - **Ops:** SQLite WAL + busy_timeout, a **daily heartbeat DM** (a silent outage otherwise looks like "no
+    edge"), and a PTB error handler.
+  - **Known prerequisite (not yet built):** the go-live gate compares our entry to Kalshi's *own* close,
+    which can't distinguish a genuinely soft Kalshi line from model error. A **live sharp-line reference**
+    (e.g. Pinnacle via an odds API, Shin-devigged, gated on beating *that*) is required before the gate can
+    authorize real money — staged pending an odds-provider + API key.
 - **2026-07-14 — Phase 6 infrastructure (run the forward-CLV paper-test unattended); 237 tests.**
   Everything needed to accumulate a trustworthy CLV sample over weeks without babysitting:
   - **Always-on deployment:** `Dockerfile` + `docker-compose.yml` (`restart: unless-stopped`, secrets/

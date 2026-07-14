@@ -351,8 +351,18 @@ bets across live tournaments; `/stats` reports the net-of-fee gate.
 **Validation / go-live gate (binding):**
 - **A pre-match edge is NOT yet demonstrated** — `p_model` does not beat the sharp bookmaker close
   (Brier-optimal blend weight 0; ~−10.6% flat ROI on held-out). **Do not bet real money.**
-- Go-live bar (implemented in `clv.summarize` / `/stats`): **net-of-fee CLV, day-clustered bootstrap
-  95% CI lower bound > `min_effect_size`, ≥ 200 bets, ≥ 30 day-clusters.** Do not bet real money until MET.
+- Go-live bar (implemented in `clv.summarize` / `/stats`, hardened 2026-07-14): **net-of-fee CLV,
+  ISO-WEEK-clustered BCa bootstrap 95% CI lower bound > `min_effect_size` (0.015), ≥ 200 bets, ≥ 12
+  week-clusters, realized net-ROI ≥ 0, AND missed-capture rate ≤ `max_missed_capture_rate` (0.30).**
+  (Was day-clustered percentile at a 0.005 bar with no ROI/health co-gate — that biased toward a
+  false green-light.) Do not bet real money until MET.
+- **PREREQUISITE — a sharp-line reference (staged; the review's #1 finding).** The gate compares our
+  entry to Kalshi's OWN close, which cannot separate "Kalshi was soft (real edge)" from "our model was
+  wrong and the close corrected away from us". Beating the close is only +EV when the close is the
+  sharpest estimate — but the whole thesis is that Kalshi's is soft. Fix (P7-E): capture a live sharp
+  odds price (e.g. Pinnacle via the-odds-api.com, Shin-devigged) at alert AND close, and gate on
+  beating THAT. Blocked on the owner picking/provisioning an odds provider + API key. Until then a
+  "MET" is necessary-not-sufficient.
 - **Liquidity gate thresholds** — set to INTERIM values on 2026-07-13 (`min_liquidity: 500`,
   fill-driven for the $100 capped stake; `max_spread: 0.03`, just above the observed 2¢ p90) from a
   `scan.py dry-run` on a post-Wimbledon 250 slate (tight books: spread med ~1¢, depth med ~1.5k–2.7k
@@ -366,7 +376,27 @@ bets across live tournaments; `/stats` reports the net-of-fee gate.
   matches are load-bearing signal for the *active* players who beat/lost to them; deleting them
   corrupts active ratings. Retired players are already inert at predict time (never in a Kalshi
   market, and the 365-day staleness gate abstains regardless). Further levers: level-weighted K and
-  serve-adjusted Elo (UTS / open-source tennis-crystal-ball reference).
+  serve-adjusted Elo (UTS / open-source tennis-crystal-ball reference). Also deferred here:
+  **surface cold-start** — `blended_rating` shrinkage keys off the OVERALL match count, not the
+  per-surface count, so a 1–2-match surface Elo can swing `p_model` ~2–3% (worst on clay/grass);
+  fix by shrinking the surface term on its own count. Measure-first: only build these if forward CLV
+  (now thin-abstained + week-clustered) comes back flat.
+
+**Newly surfaced by the 2026-07-14 holistic review (open):**
+- **East-Asian / surname-first names:** `names.canonical_key` assumes given-name-first, so
+  "Zheng Qinwen" keys as `qinwen_z`. If Kalshi lists Chinese players surname-first while the feed
+  uses Western order, the bot silently abstains on a frequently-favored WTA slice. Run a read-only
+  Kalshi probe before the run; add `names.ALIASES`/an id-join if confirmed.
+- **Round-robin / team formats** (ATP/WTA Finals, United Cup, Laver Cup) listed under the outright
+  series could trip the "exactly two active contracts = the final" rule and mis-resolve. Verify with a
+  dry-run scan when those events are live.
+- **Optional-stopping / segment-mining:** the go-live CI is recomputable as bets accrue and CLV is
+  segmented many ways — repeated peeking inflates the false-positive rate. Pre-commit a single primary
+  analysis (or alpha-spend) before trusting a "MET".
+- **Load-bearing constants** (fee 0.07, the fitted logistic scales, RESEARCH-KALSHI dated 2026-07-02)
+  should be re-verified against live Kalshi immediately before the run (§6 verify checklist).
+- **Post-go-live controls** (a live-ROI-vs-CLV divergence monitor, a drawdown kill-switch, a
+  go-live-revocation condition) are unspecified — design before real money, not after.
 
 **Deferred features:**
 - `/settings` (view/update thresholds + bankroll at runtime) — later.

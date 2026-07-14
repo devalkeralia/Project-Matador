@@ -70,6 +70,10 @@ Resolve the rest in the phase noted:
   `closing_captured_at`; add a capture path (extend `/result` or add `/close`, or carve out a
   single deferred settled-market read as exempt from the no-poll rule — detect match end via
   market status). Report CLV **gross**; track fees/EV separately.
+  > **Errata (2026-07-13 review hardening):** the **binding go-live gate is NET-of-fee** CLV
+  > (a gross-CLV gate could green-light a fee-losing strategy). `clv.summarize` reports **both** —
+  > `mean_clv` (net, the gate) and `mean_gross_clv` (informational) — so "report gross" is honored
+  > while the decision uses net. See DESIGN-DECISIONS "Open items & deferred work".
 - **Go-live rule:** not `mean(clv) > 0` — require the **lower bound of a cluster/block-bootstrap
   95% CI on mean CLV > 0** plus a minimum effect size; treat ~200 bets as a floor.
 - **No-lookahead:** every rating uses only prior-dated matches; add a burn-in filter; **tune on a

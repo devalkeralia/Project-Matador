@@ -383,10 +383,39 @@ bets across live tournaments; `/stats` reports the net-of-fee gate.
   liquidity or edge sort could be added later.
 - The **outright→H2H** equivalence holds **only at the final** (two active contracts); earlier Slam
   rounds rely on the `KXATPMATCH` per-round markets (already handled).
+- **Concurrency races (Phase-6 scheduled scan; accepted LOW):** the 8-hourly `scheduled_scan_job`
+  runs on a worker thread alongside manual `/check`/`/scan`. In the sub-second window between a
+  match's dedup-`SELECT` and its `INSERT`, a concurrent sweep of the same match could (a) double-log
+  the opportunity (`log_opportunity` dedup is a non-atomic SELECT-then-INSERT; there is no `UNIQUE`
+  on `(market_ticker, side)` — a `UNIQUE` is deferred by design since a contract legitimately
+  re-alerts across rounds/tournaments), or (b) double-capture a closing line (duplicate DM +
+  redundant read). CLV is **not** poisoned (both snapshots are same-era pre-match) and **day-clustering
+  already absorbs** the correlated duplicate in the go-live CI. Left as-is: the window is microseconds
+  in a multi-second network-bound sweep, and a lock/`UNIQUE` would add complexity disproportionate to a
+  cosmetic, CI-neutral race on a single-user bot.
 
-**Ops:**
-- **VPS deployment** (always-on process) — the user runs it; no auto-restart/watchdog yet.
-- Refresh `data/model.json` (from LuckyLoser91, live weekly) before any live paper run; the
+**Ops (Phase-6 infrastructure — built 2026-07-14):**
+- **Always-on deployment DONE:** `Dockerfile` + `docker-compose.yml` (`restart: unless-stopped`,
+  **read-only** secrets/config mounts so nothing sensitive is baked into an image, rotating file
+  logging, PTB error handler); systemd alternative documented (README "Run as a service"). A weekly
+  host-cron model refresh + `docker compose restart` is safe — pending closing-line captures rebuild
+  from the DB on startup, so a restart loses none. Deliberate v1 scope cut: no custom watchdog beyond
+  the restart policy + PTB long-poll reconnect.
+- **Scheduled systematic scan DONE** (`scan_interval_hours`, default 8h; `max_instances:1`+`coalesce`
+  guard overlap; quiet unless an alert fires) — removes owner-timing selection bias from the CLV
+  sample. **Postponement handling DONE** — the auto-capture job treats the live Kalshi market as the
+  single source of truth for match start: it re-arms on a postponement (rather than capturing a stale
+  time) and a past-due row at startup fires an immediate re-check rather than being marked missed.
+- **CLV analysis DONE:** `scripts/clv_report.py` segments net CLV by tour / price band / flag / ISO
+  week, and `/stats` gained a `Captures: N auto / N manual / N missed` health line — both reuse
+  `clv.summarize` (no re-derived math).
+- **Liquidity-gate recalibration protocol:** at the August Masters main draw (Toronto/Cincinnati) run
+  `scripts/scan.py dry-run --tour atp --tour wta` (read-only; now sweeps outright finals too and
+  segments the depth/spread distribution per tour AND per tier), then set `min_liquidity`/`max_spread`
+  in `config.yaml` from the observed **liquid** (Slam/Masters) distribution and record the numbers
+  here. The current 500 / 0.03 are interim (thin post-Wimbledon slate). Err loose during the
+  paper-test — you're measuring, not trading, so don't starve the sample.
+- Refresh `data/model.json` (from LuckyLoser91, live weekly) before and through the paper run; the
   365-day max-staleness gate already guards against pricing on stale ratings.
 
 ## Non-goals / guardrails

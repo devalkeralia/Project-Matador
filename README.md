@@ -16,13 +16,15 @@ model probability, per-side edge math) — logging qualifying paper opportunitie
 matches ranked by model strength; **`/close`** captures the closing line (manual + auto-scheduled at
 match start), **`/result`** records outcomes, **`/stats`** reports hit rate, P&L, and **closing-line
 value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, `/notes`, `/help`.
-On-demand only (never polls Kalshi on a timer); owner-chat-gated; **never places orders**. Phases 1–3
+On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
 (data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
-/ WTA 0.2164; net-of-fee edge + ¼-Kelly staking engine) are done. Next: **Phase 6** — run the
-**forward CLV paper-test** (the go-live bar). **v1 = pre-match value alerts only** (in-play
+/ WTA 0.2164; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure is now
+built (237 tests):** always-on Docker deployment, a scheduled systematic scan (unbiased sampling), a
+postponement-aware closing-line capture, and an offline `clv_report.py` — everything needed to run the
+**forward CLV paper-test** (the go-live bar) unattended. **v1 = pre-match value alerts only** (in-play
 mean-reversion pilot = v2).
 
-_Last updated: 2026-07-13_
+_Last updated: 2026-07-14_
 
 ## What this is
 
@@ -66,8 +68,104 @@ CLV clears 0 over ~200+ bets. Recalibrate the liquidity gate on the August Maste
 [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"** for the full
 list of deferred features, monitored gaps, and the validation gate.
 
+## Run as a service
+
+The forward-CLV paper-test needs the bot running **unattended for weeks** so the scheduled scan and
+auto-capture accumulate a sample. Run it with Docker Compose (paper only — it still never places
+orders):
+
+```bash
+mkdir -p data logs                 # pre-create the writable mounts so they're owned by YOU, not root
+docker compose up -d --build       # start (production Kalshi reads, read-only)
+docker compose logs -f matador     # follow logs (also written to logs/matador.log, rotated)
+docker compose down                # stop
+```
+
+> **Create `data/` and `logs/` first** (the `mkdir` above). If you let Docker auto-create a missing
+> bind-mount source it makes it **root-owned**, and the non-root (uid 1000) container can't write it —
+> the DB write fails (and file logging falls back to console-only). On a box where your user isn't uid
+> 1000, run as yourself instead: uncomment `user:` in `docker-compose.yml` and start with
+> `UID=$(id -u) GID=$(id -g) docker compose up -d`.
+
+**Mount contract — nothing sensitive is baked into the image.** The Dockerfile copies only source
+(`matador/`, `scripts/`, `reference/`) and `pip install`s the package; `.dockerignore` keeps
+secrets/config/data out of the build context. At runtime `docker-compose.yml` bind-mounts:
+
+| Host path | In container | Mode | Holds |
+|-----------|-------------|------|-------|
+| `secrets/` | `/app/secrets` | read-only | Kalshi key + `TELEGRAM_TOKEN`/`TELEGRAM_CHAT_ID` |
+| `config.yaml` | `/app/config.yaml` | read-only | bankroll + gate thresholds |
+| `data/` | `/app/data` | writable | `model.json` + the SQLite opportunity/outcome log |
+| `logs/` | `/app/logs` | writable | rotating `matador.log` |
+
+`restart: unless-stopped` brings the bot back after a crash or host reboot; PTB reconnects its
+long-poll on transient network drops (health check: send `/help` and confirm a reply). No custom
+watchdog in v1.
+
+**Weekly model refresh** (LuckyLoser91 updates weekly) — a host cron; a **restart is safe** because
+pending closing-line captures are rebuilt from the DB on startup, so none are lost:
+
+```bash
+# crontab -e  (Mondays 06:00) — run from the repo root
+0 6 * * 1  cd /path/to/Tennis\ Betting && .venv/bin/python scripts/prepare_matches.py && \
+           .venv/bin/python scripts/build_ratings.py && docker compose restart matador
+```
+
+**No-Docker alternative (systemd):** create `/etc/systemd/system/matador.service` with
+`WorkingDirectory=/path/to/Tennis Betting`, `ExecStart=/path/to/.venv/bin/python scripts/bot.py`,
+`Restart=always`, `User=<you>`, then `systemctl enable --now matador`. Same weekly-refresh cron, with
+`systemctl restart matador` instead of `docker compose restart`.
+
+## Phase-6 forward-CLV paper-test runbook
+
+The binding go-live gate. **Start at the August Masters main draw** (Toronto/Cincinnati) — liquid
+markets where the gate thresholds are meaningful.
+
+1. **Recalibrate the liquidity gate first:** `.venv/bin/python scripts/scan.py dry-run --tour atp --tour wta`
+   (read-only). It prints the depth/spread distribution per tour **and per tier** (H2H + outright
+   finals). Set `min_liquidity`/`max_spread` in `config.yaml` from the observed **liquid**
+   (Slam/Masters) distribution — the current values are interim, from a thin post-Wimbledon slate.
+   During the paper-test **err loose** (you're measuring, not trading — don't starve the sample).
+2. **Run it unattended** (see "Run as a service" for the one-time `mkdir -p data logs` + `docker
+   compose up -d --build`). The scheduled scan (`scan_interval_hours: 8`)
+   sweeps on a timer so the sample isn't biased by when *you* happen to check; the auto-capture
+   snapshots each match's closing line a few minutes before start (postponement-aware). You get a DM
+   only when an alert fires.
+3. **Record outcomes** with `/result <opp_id> <win|loss> <fill> [contracts]` as matches settle.
+4. **Read the verdict** weekly: `/stats` (with a `Captures: N auto / N manual / N missed` health line)
+   and `.venv/bin/python scripts/clv_report.py` (segments net CLV by tour / price band / flag / week).
+   - **Watch:** capture health (a high `missed` count = a thin/biased sample — investigate before
+     trusting the number); `n` → 200; day-clusters → 30; the net-CLV 95% CI lower bound.
+   - **MET** (`/stats` shows *Go-live gate: ✅ MET*): net-of-fee day-clustered bootstrap 95% CI lower
+     bound `> min_effect_size`, `n ≥ 200`, `≥ 30` day-clusters. Only then consider real money.
+   - **Flat** (enough sample, CI straddles/below the effect size): the model has no Kalshi edge. The
+     first documented lever is **recency / time-decayed Elo** (see DESIGN-DECISIONS "Open items") —
+     *measure first; don't build it pre-emptively.*
+
 ## Changelog
 
+- **2026-07-14 — Phase 6 infrastructure (run the forward-CLV paper-test unattended); 237 tests.**
+  Everything needed to accumulate a trustworthy CLV sample over weeks without babysitting:
+  - **Always-on deployment:** `Dockerfile` + `docker-compose.yml` (`restart: unless-stopped`, secrets/
+    config mounted **read-only**, nothing baked into the image), rotating file logging, and a PTB error
+    handler so a transient job failure logs instead of silently dying. Weekly host-cron model refresh +
+    `docker compose restart` is safe — pending captures rebuild from the DB on startup. systemd
+    alternative documented. (See **"Run as a service"**.)
+  - **Scheduled systematic scan** (`scan_interval_hours`, default 8h) — sweeps on a timer to remove
+    owner-timing selection bias from the sample; `max_instances:1`+`coalesce` guard overlap; quiet
+    unless an alert fires.
+  - **Postponement-aware capture:** the auto-capture job treats the live Kalshi market as the single
+    source of truth for match time — if a match is pushed back it re-arms instead of false-missing;
+    a past-due row at startup fires an immediate re-check rather than being marked missed.
+  - **CLV analysis depth:** `scripts/clv_report.py` segments net CLV by tour / price band / flag / ISO
+    week (reusing `clv.summarize`), and `/stats` gained a capture-health line.
+  - **Proxy-backtest fidelity:** `backtest_vs_bookmaker.py` now Shin-devigs the proxy odds, excludes
+    retirements/walkovers, and segments by tier — the no-edge verdict holds (w*≈0, ROI ≈ −11%, negative
+    across the liquid Slam/Masters tiers too).
+  - **Liquidity-gate recalibration tooling:** `scan.py dry-run` now sweeps outright finals too and
+    segments per tour and per tier — run it at the August Masters to set the gate from the liquid
+    distribution (see the **Phase-6 runbook**). Model still has **no demonstrated pre-match edge** —
+    do not bet real money until the gate is MET.
 - **2026-07-13 — Review hardening (multi-agent review → fixes); 220 tests.** An 8-lens adversarial
   review (42 agents) surfaced 31 verified issues; fixed the correctness / data-integrity / go-live-gate
   ones before forward paper-testing:

@@ -1,0 +1,45 @@
+# Mirror of .gitignore -- keep secrets/config/data/logs OUT of the build context so they can
+# never be baked into an image layer (they are bind-mounted at runtime instead).
+
+# --- Secrets & credentials (NEVER bake in) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_key
+secrets/
+
+# --- Local config (bankroll) + runtime data/logs (mounted at runtime) ---
+config.yaml
+data/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- Tests / caches / research / IDE (not needed in the runtime image) ---
+tests/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+Research/
+*.zip
+*.url
+.git/
+.idea/
+.vscode/
+.DS_Store

@@ -72,6 +72,8 @@ class Config(BaseModel):
     thin_kelly_haircut: float = 0.5  # extra Kelly-fraction multiplier applied to thin-player bets (uncertainty-aware sizing)
     min_effect_size: float = 0.005   # go-live gate: the NET-CLV 95% CI lower bound must exceed this (a margin above break-even, in price units ~0.5c). Tunable.
     min_clv_clusters: int = 30       # go-live gate: require at least this many independent day-clusters (alongside >= 200 bets)
+    scan_interval_hours: float | None = None  # scheduled systematic /scan cadence in hours (removes owner-timing selection bias); None disables the timer
+    scan_announce: bool = False      # DM the owner on every scheduled scan; default only DMs when an alert fires (avoids ping fatigue)
     tours: list[str] = Field(default_factory=lambda: ["ATP", "WTA"])
     series: SeriesConfig = Field(default_factory=SeriesConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
@@ -106,6 +108,13 @@ class Config(BaseModel):
     def _max_price_range(cls, v: float) -> float:
         if not (0 < v < 1):
             raise ValueError("max_price must be in (0, 1)")
+        return v
+
+    @field_validator("scan_interval_hours")
+    @classmethod
+    def _scan_interval_positive(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:  # a repeating job needs a positive period; omit (None) to disable
+            raise ValueError("scan_interval_hours must be > 0 (or omit to disable)")
         return v
 
     @model_validator(mode="after")

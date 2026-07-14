@@ -27,6 +27,11 @@ thin_kelly_haircut: 0.5  # extra Kelly-fraction multiplier on thin-player bets (
 min_effect_size: 0.005  # net-CLV 95% CI lower bound must exceed this margin above break-even (~0.5c)
 min_clv_clusters: 30    # require >= this many independent trading-day clusters (alongside >= 200 bets)
 
+# Scheduled systematic scan (Phase 6): sweep every N hours so the CLV sample isn't biased by owner
+# timing. Quiet unless an alert fires (scan_announce: true DMs every scan). Omit / None = disabled.
+scan_interval_hours: 8.0
+scan_announce: false
+
 # v1 Elo model hyperparameters. The per-format logistic scales are fitted per tour by
 # scripts/build_ratings.py and stored in data/model.json (not set here).
 elo:

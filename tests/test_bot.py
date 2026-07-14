@@ -1,7 +1,10 @@
+import asyncio
+
 import httpx
 import pytest
 
 from matador.bot import (
+    auto_capture,
     build_application,
     capture_close,
     is_authorized,
@@ -14,6 +17,8 @@ from matador.bot import (
     run_scan,
     run_stats,
     schedule_pending_captures,
+    scheduled_scan_job,
+    _scheduled_scan_job,
     split_message,
 )
 from matador.config import Config
@@ -320,6 +325,7 @@ def test_run_stats_after_close_and_result():
     out = run_stats(conn, make_cfg())
     assert "Paper-trading stats" in out
     assert "Trades recorded: 1" in out and "1W/0L" in out
+    assert "Captures: 0 auto / 1 manual / 0 missed" in out  # /close is a manual capture
     assert "1 bet(s) over 1 day(s)" in out and "Go-live gate" in out
     conn.close()
 
@@ -338,6 +344,158 @@ def test_schedule_pending_captures_schedules_timed_opps_only(tmp_path):
     assert schedule_pending_captures(app) == 1                 # only the opp with an occurrence is scheduled
     assert app.job_queue.get_jobs_by_name("close:1")
     assert schedule_pending_captures(app) == 0                 # idempotent -- already scheduled, not duplicated
+
+
+def test_schedule_pending_captures_schedules_immediate_job_for_past_due(tmp_path):
+    """A past-due stored start is no longer marked missed at startup -- it gets an immediate job
+    that re-checks the LIVE market (so a postponed match isn't false-missed). No network here."""
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+    base = dict(ts="t", tour="ATP", side="yes", price=0.5, p_model=0.6, net_edge=0.08, trigger_reason="prematch_value")
+    insert_opportunity(conn, market_ticker="T-A", occurrence_datetime="2020-01-01T00:00:00Z", **base)  # long past
+    conn.close()
+    app = build_application("1:x", make_cfg(db_path=dbp), object(), chat_id=42)
+    assert schedule_pending_captures(app) == 1                 # scheduled (immediate), NOT marked missed
+    assert app.job_queue.get_jobs_by_name("close:1")
+    conn2 = connect(dbp)
+    init_db(conn2)
+    assert conn2.execute("SELECT count(*) FROM outcomes").fetchone()[0] == 0   # no missed row written
+    assert [r["id"] for r in pending_captures(conn2)] == [1]                   # still pending, not consumed
+    conn2.close()
+
+
+# ---- WS3: postponement reconciliation (live market is the single source of truth) ----
+
+def make_reconcile_client(status="active", occurrence="2099-01-01T00:00:00Z",
+                          yes_levels=(("0.45", "100"),), no_levels=(("0.50", "50"),)):
+    """Like make_capture_client but get_market carries an occurrence_datetime (so auto_capture can
+    compare the live start against the stored one)."""
+    def handler(request):
+        p = request.url.path
+        if p.endswith("/orderbook"):
+            return httpx.Response(200, json={"orderbook_fp": {
+                "yes_dollars": [list(x) for x in yes_levels], "no_dollars": [list(x) for x in no_levels]}})
+        if "/markets/" in p:
+            return httpx.Response(200, json={"market": {"ticker": "M", "event_ticker": "E", "status": status,
+                                                        "yes_sub_title": "Player Aaa", "no_sub_title": "Player Aaa",
+                                                        "occurrence_datetime": occurrence}})
+        raise AssertionError(f"unexpected {request.url}")
+    return KalshiClient(base_url="https://x/trade-api/v2", transport=httpx.MockTransport(handler))
+
+
+def test_auto_capture_reschedules_on_postponement():
+    conn = _db()
+    oid = _capture_opp(conn, occurrence="2099-01-01T00:00:00Z")           # stored start
+    with make_reconcile_client(occurrence="2099-06-01T00:00:00Z") as client:  # live shows a much later start
+        res = auto_capture(client, conn, oid)
+    assert res["action"] == "rescheduled" and res["new_start"] == "2099-06-01T00:00:00Z"
+    row = conn.execute("SELECT occurrence_datetime FROM opportunities WHERE id=?", (oid,)).fetchone()
+    assert row["occurrence_datetime"] == "2099-06-01T00:00:00Z"           # stored time corrected
+    assert conn.execute("SELECT count(*) FROM outcomes WHERE opp_id=?", (oid,)).fetchone()[0] == 0  # nothing captured/missed
+    assert [r["id"] for r in pending_captures(conn)] == [oid]             # still pending -> will re-arm
+    conn.close()
+
+
+def test_auto_capture_captures_when_time_unchanged():
+    conn = _db()
+    oid = _capture_opp(conn, occurrence="2099-01-01T00:00:00Z")
+    with make_reconcile_client(occurrence="2099-01-01T00:00:00Z") as client:  # same start (within epsilon)
+        res = auto_capture(client, conn, oid)
+    assert res["action"] == "captured" and res["result"]["ok"]
+    assert res["result"]["closing_price"] == pytest.approx(0.475)         # mid of the same-side book
+    conn.close()
+
+
+def test_auto_capture_corrects_earlier_start_and_misses_when_now_past():
+    # Match moved EARLIER: live start is already in the past while stored was (wrongly) future and the
+    # market is still active/in-play. Correct the stored time and MISS -- never snapshot an in-play price.
+    conn = _db()
+    oid = _capture_opp(conn, occurrence="2099-01-01T00:00:00Z")
+    with make_reconcile_client(occurrence="2020-01-01T00:00:00Z") as client:
+        res = auto_capture(client, conn, oid)
+    assert res["action"] == "captured" and not res["result"]["ok"] and res["result"]["reason"] == "too_late"
+    row = conn.execute("SELECT occurrence_datetime FROM opportunities WHERE id=?", (oid,)).fetchone()
+    assert row["occurrence_datetime"] == "2020-01-01T00:00:00Z"           # stored corrected to the real (past) start
+    conn.close()
+
+
+# ---- WS2: scheduled systematic scan ----
+
+class _FakeBot:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id, text):
+        self.sent.append((chat_id, text))
+
+
+class _FakeJobContext:
+    """Minimal stand-in for a PTB job CallbackContext (bot_data + application + a capturing bot)."""
+    def __init__(self, app):
+        self.application = app
+        self.bot_data = app.bot_data
+        self.bot = _FakeBot()
+
+
+def _app_for_job(tmp_path, **cfg_over):
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+    conn.close()
+    return build_application("1:x", make_cfg(db_path=dbp, **cfg_over), object(), chat_id=42)
+
+
+def test_build_application_registers_scheduled_scan_only_when_configured():
+    off = build_application("1:x", make_cfg(), object(), chat_id=42)
+    assert not off.job_queue.get_jobs_by_name("scheduled_scan")          # None cadence -> no timer
+    on = build_application("1:x", make_cfg(scan_interval_hours=8.0), object(), chat_id=42)
+    assert on.job_queue.get_jobs_by_name("scheduled_scan")               # configured -> repeating job armed
+
+
+def test_scheduled_scan_job_dms_on_new_alert_and_arms_captures(tmp_path, monkeypatch):
+    app = _app_for_job(tmp_path, scan_interval_hours=8.0)
+    monkeypatch.setattr("matador.bot._scheduled_scan_job", lambda *a: ("🎾 VALUE ALERT — ATP · Wimbledon\nopp #1", 1))
+    ctx = _FakeJobContext(app)
+    asyncio.run(scheduled_scan_job(ctx))
+    assert len(ctx.bot.sent) == 1 and ctx.bot.sent[0][0] == 42 and "VALUE ALERT" in ctx.bot.sent[0][1]
+
+
+def test_scheduled_scan_job_quiet_when_no_new_alert_unless_announce(tmp_path, monkeypatch):
+    # A standing edge that /scan re-renders but does NOT re-log (n_new=0) must not re-ping.
+    monkeypatch.setattr("matador.bot._scheduled_scan_job",
+                        lambda *a: ("🎾 VALUE ALERT — standing edge (already logged)", 0))
+    quiet = _FakeJobContext(_app_for_job(tmp_path))                      # scan_announce defaults False
+    asyncio.run(scheduled_scan_job(quiet))
+    assert quiet.bot.sent == []                                         # nothing NEW -> no DM (even though text has an alert block)
+    loud = _FakeJobContext(_app_for_job(tmp_path, scan_announce=True))
+    asyncio.run(scheduled_scan_job(loud))
+    assert len(loud.bot.sent) == 1                                      # announce -> DM regardless
+
+
+def test_scheduled_scan_job_swallows_scan_errors(tmp_path, monkeypatch):
+    def boom(*a):
+        raise RuntimeError("kalshi down")
+    monkeypatch.setattr("matador.bot._scheduled_scan_job", boom)
+    ctx = _FakeJobContext(_app_for_job(tmp_path, scan_interval_hours=8.0))
+    asyncio.run(scheduled_scan_job(ctx))                                # must not raise (repeating job survives)
+    assert ctx.bot.sent == []
+
+
+def test_scheduled_scan_new_count_dedups_standing_edge_across_cycles(tmp_path, monkeypatch):
+    """_scheduled_scan_job reports NEW logged opps: the first sweep logs one, the second finds it
+    standing (deduped) -> n_new=0, which is what keeps the scheduled job quiet on a standing edge."""
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+    conn.close()
+    monkeypatch.setattr("matador.bot._client", lambda cfg, demo: make_client())
+    cfg = make_cfg(db_path=dbp)
+    model = OrientedModel("Player Aaa", "Player Bbb", 0.60)
+    text1, n1 = _scheduled_scan_job(cfg, model, False, ["atp"])
+    _text2, n2 = _scheduled_scan_job(cfg, model, False, ["atp"])
+    assert n1 == 1 and "VALUE ALERT" in text1   # first sweep logs a new opp
+    assert n2 == 0                              # second sweep: standing edge deduped -> nothing new
 
 
 # ---- split_message ----

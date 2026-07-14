@@ -149,6 +149,14 @@ def record_outcome(conn: sqlite3.Connection, opp_id: int, **fields) -> None:
     conn.commit()
 
 
+def update_occurrence(conn: sqlite3.Connection, opp_id: int, occurrence_datetime: str) -> None:
+    """Refresh a logged opportunity's scheduled match time -- the ONLY writer of this column after
+    insert. Called when the live Kalshi market shows the match was postponed, so the closing-line
+    capture can re-arm against the corrected start (see bot.auto_capture)."""
+    conn.execute("UPDATE opportunities SET occurrence_datetime = ? WHERE id = ?", (occurrence_datetime, opp_id))
+    conn.commit()
+
+
 def get_opportunity(conn: sqlite3.Connection, opp_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM opportunities WHERE id = ?", (opp_id,)).fetchone()
 

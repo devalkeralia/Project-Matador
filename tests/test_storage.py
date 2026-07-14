@@ -4,7 +4,7 @@ import pytest
 
 from matador.storage import (
     connect, get_opportunity, init_db, insert_opportunity, pending_captures,
-    record_outcome, recent_opportunities, settled_bets,
+    record_outcome, recent_opportunities, settled_bets, update_occurrence,
 )
 
 
@@ -168,6 +168,15 @@ def test_settled_bets_joins_and_pending_captures_filters(db):
     assert rows[a]["closing_price"] == 0.56 and rows[a]["price"] == 0.50
     assert rows[b]["closing_price"] is None                       # LEFT JOIN -> NULL outcome
     assert [r["id"] for r in pending_captures(db)] == [b]         # a has a closing line; b is pending
+
+
+def test_update_occurrence_changes_only_that_column(db):
+    oid = make_opportunity(db, occurrence_datetime="2026-07-04T13:00:00Z")
+    update_occurrence(db, oid, "2026-07-05T15:00:00Z")  # match postponed a day
+    row = get_opportunity(db, oid)
+    assert row["occurrence_datetime"] == "2026-07-05T15:00:00Z"
+    assert row["market_ticker"] == "KXATPMATCH-26JUL04DIMBER-DIM"  # other columns untouched
+    assert row["price"] == 0.42
 
 
 def test_last_opportunity_returns_latest_matching_or_none(db):

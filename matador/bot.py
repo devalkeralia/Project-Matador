@@ -14,6 +14,7 @@ responsive. Each command opens its own KalshiClient + sqlite connection inside t
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,8 @@ from matador.clv import net_pnl, summarize
 from matador.engine import evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series
 from matador.kalshi.client import KalshiClient
 from matador.storage import get_opportunity, last_opportunity, pending_captures, recent_opportunities, settled_bets
+
+log = logging.getLogger(__name__)
 
 PROD_BASE = "https://external-api.kalshi.com/trade-api/v2"  # public read-only; --demo uses cfg.kalshi_base_url
 
@@ -81,6 +84,7 @@ _RECENT_MAX = 50
 _FIND_TOP_N = 5
 CAPTURE_BEFORE_START = timedelta(minutes=5)   # auto-capture this long BEFORE scheduled start (guaranteed pre-match)
 CAPTURE_LATE_GRACE = timedelta(minutes=15)    # refuse a capture more than this past scheduled start (Kalshi trades in-play -> price would no longer be the pre-match CLOSE)
+RESCHEDULE_EPSILON = timedelta(minutes=2)     # ignore sub-epsilon start-time drift; a larger future shift = a postponement -> re-arm the capture
 
 
 # ---- pure helpers (testable) ----
@@ -237,6 +241,36 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
             "closing_price": mid, "entry_price": opp["price"]}
 
 
+def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None) -> dict:
+    """Scheduled-capture arbiter: the LIVE Kalshi market is the single source of truth for the
+    match start. When it differs materially from the stored time (a reschedule in EITHER direction),
+    correct the stored time first, then:
+      - if the corrected start is still in the FUTURE -> signal a reschedule (re-arm; do NOT capture),
+        so a stale time can't false-'miss' a match that got pushed back;
+      - if it's now in the PAST -> fall through to capture_close, which (against the CORRECTED time)
+        marks it missed rather than snapshotting an in-play price -- closing the CLV-poison gap.
+    An unchanged (within-epsilon) time falls straight through to capture_close as before.
+
+    Returns {"action": "rescheduled", ...} or {"action": "captured", "result": <capture_close dict>}.
+    All Kalshi contact lives here (not in schedule_pending_captures, which stays DB-only)."""
+    opp = get_opportunity(conn, opp_id)
+    now = now or datetime.now(timezone.utc)
+    if opp is not None:
+        market = client.get_market(opp["market_ticker"])
+        stored = _parse_dt(opp["occurrence_datetime"])
+        live = _parse_dt(market.occurrence_datetime)
+        moved = (
+            market.status in ("active", "open")
+            and live is not None and stored is not None
+            and abs((live - stored).total_seconds()) > RESCHEDULE_EPSILON.total_seconds()
+        )
+        if moved:
+            storage.update_occurrence(conn, opp_id, market.occurrence_datetime)  # correct EITHER direction
+            if live > now:  # still snapshot-able pre-match -> re-arm for the new start, don't capture now
+                return {"action": "rescheduled", "opp_id": opp_id, "new_start": market.occurrence_datetime}
+    return {"action": "captured", "result": capture_close(client, conn, opp_id, source="auto", now=now)}
+
+
 def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int | None, cfg) -> str:
     """Record how a trade went: upsert the fill + outcome, computing net-of-fee P&L. `contracts`
     defaults to the opportunity's suggested size."""
@@ -322,6 +356,19 @@ def _scan_job(cfg, model, demo, tours) -> str:
         return _with_conn(cfg, lambda conn: run_scan(client, model, cfg, conn, tours))
 
 
+def _scheduled_scan_job(cfg, model, demo, tours) -> tuple[str, int]:
+    """Worker for the scheduled scan: run the sweep and report how many opportunities were NEWLY
+    logged this cycle -- so the async job DMs only on genuinely new alerts, not a standing edge
+    that /scan re-renders (but dedups and does not re-log) on every cycle."""
+    with _client(cfg, demo) as client:
+        def work(conn):
+            before = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+            text = run_scan(client, model, cfg, conn, tours)
+            after = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+            return text, after - before
+        return _with_conn(cfg, work)
+
+
 def _recent_job(cfg, n) -> str:
     return _with_conn(cfg, lambda conn: run_recent(conn, n))
 
@@ -340,10 +387,11 @@ def _close_job(cfg, demo, opp_id) -> str:
         return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id))
 
 
-def _auto_capture_job(cfg, demo, opp_id) -> str:
-    """The scheduled (auto) capture path -- same as /close but tags the source 'auto'."""
+def _auto_capture_job(cfg, demo, opp_id) -> dict:
+    """The scheduled (auto) capture path: reconcile against the live market (postpone-aware), then
+    capture-or-miss. Returns auto_capture's action dict for capture_job to act on."""
     with _client(cfg, demo) as client:
-        return _with_conn(cfg, lambda conn: format_close(capture_close(client, conn, opp_id, source="auto")))
+        return _with_conn(cfg, lambda conn: auto_capture(client, conn, opp_id))
 
 
 def _stats_job(cfg) -> str:
@@ -475,12 +523,15 @@ def schedule_pending_captures(application: Application) -> int:
             start = _parse_dt(row["occurrence_datetime"])
             if start is None or jq.get_jobs_by_name(f"close:{row['id']}"):
                 continue  # untimed -> manual /close only; or already scheduled
-            if now > start + CAPTURE_LATE_GRACE:  # too late for a clean pre-match snapshot -> mark missed once
-                _mark_missed(conn, row["id"], "stale", "auto")
-                continue
-            # fire a few minutes BEFORE start so the snapshot is pre-match (not in-play)
+            # Fire a few minutes BEFORE start so the snapshot is pre-match (not in-play). A past-due
+            # row fires immediately (when=0): the job re-checks the LIVE market and either reschedules
+            # (postponed) or marks missed (genuinely over) -- so a stale stored time never false-misses
+            # a match Kalshi actually pushed back. This stays DB-only; all network contact is in the job.
+            # misfire_grace_time=None: if the scheduler is momentarily late (busy loop / a long
+            # scan), run the capture anyway rather than silently dropping it as a misfire (which
+            # would leave the row uncaptured AND uncounted). capture_close then decides capture-vs-missed.
             jq.run_once(capture_job, when=max(0.0, (start - CAPTURE_BEFORE_START - now).total_seconds()),
-                        name=f"close:{row['id']}", data=row["id"])
+                        name=f"close:{row['id']}", data=row["id"], job_kwargs={"misfire_grace_time": None})
             scheduled += 1
     finally:
         conn.close()
@@ -488,14 +539,54 @@ def schedule_pending_captures(application: Application) -> int:
 
 
 async def capture_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """One-shot job: snapshot the closing line for one opportunity, then confirm to the owner chat."""
+    """One-shot job: reconcile against the live market, then either capture the closing line or
+    (if the match was postponed) re-arm for the corrected start. Confirms to the owner chat."""
     bd = context.bot_data
-    msg = await asyncio.to_thread(_auto_capture_job, bd["cfg"], bd["demo"], context.job.data)
+    res = await asyncio.to_thread(_auto_capture_job, bd["cfg"], bd["demo"], context.job.data)
+    if res["action"] == "rescheduled":
+        # The fired one-shot is already gone from the queue, so re-arming close:{id} can't clash.
+        schedule_pending_captures(context.application)
+        msg = f"⏱️ Opp #{res['opp_id']} postponed (new start {res['new_start']}) — closing-line capture rescheduled."
+    else:
+        msg = format_close(res["result"])
     await context.bot.send_message(chat_id=bd["chat_id"], text=msg)
+
+
+# ---- scheduled systematic scan (a low-frequency timer, NOT continuous polling) ----
+
+SCHEDULED_SCAN_FIRST = 30.0  # seconds after startup before the first scheduled scan (let startup settle)
+
+
+async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Low-frequency systematic /scan: removes owner-timing selection bias from the CLV sample by
+    sweeping on a fixed cadence rather than only when the owner runs /scan. Runs the same blocking
+    sweep as /scan on a worker thread, arms closing-line captures for any new opps, logs a one-line
+    summary, and DMs the owner ONLY when a NEW opportunity was logged this cycle (or cfg.scan_announce)
+    -- a still-standing edge is deduped and must not re-ping every cycle. Exceptions are logged
+    (never propagate to wedge the repeating job)."""
+    bd = context.bot_data
+    cfg = bd["cfg"]
+    try:
+        text, n_new = await asyncio.to_thread(_scheduled_scan_job, cfg, bd["model"], bd["demo"], cfg.tours)
+    except Exception:
+        log.exception("scheduled scan failed")
+        return
+    schedule_pending_captures(context.application)  # arm auto-capture for any freshly-logged opps
+    log.info("scheduled scan complete: %d new alert(s)", n_new)
+    if n_new > 0 or cfg.scan_announce:
+        for chunk in split_message(text):
+            await context.bot.send_message(chat_id=bd["chat_id"], text=chunk)
 
 
 async def on_startup(application: Application) -> None:
     schedule_pending_captures(application)
+
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log any unhandled handler/job exception. Without this a transient scheduled-scan or
+    auto-capture failure would be swallowed silently -- here it's recorded (and the always-on
+    process keeps running) so a multi-week paper-test leaves a diagnosable trail."""
+    log.error("unhandled error in handler/job", exc_info=context.error)
 
 
 def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, default_tour: str = "atp") -> Application:
@@ -503,6 +594,7 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
     each gated to the owner's chat both by filters.Chat and the in-handler is_authorized check."""
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
     app.bot_data.update(cfg=cfg, model=model, demo=demo, chat_id=int(chat_id), default_tour=default_tour)
+    app.add_error_handler(on_error)
     chat_filter = filters.Chat(chat_id=int(chat_id))
     app.add_handler(CommandHandler("check", cmd_check, filters=chat_filter))
     app.add_handler(CommandHandler(["find", "findmatch"], cmd_find, filters=chat_filter))
@@ -513,4 +605,14 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
     app.add_handler(CommandHandler("stats", cmd_stats, filters=chat_filter))
     app.add_handler(CommandHandler(["notes", "helpnotes"], cmd_notes, filters=chat_filter))
     app.add_handler(CommandHandler(["help", "start"], cmd_help, filters=chat_filter))
+    # Scheduled systematic scan (only if the job-queue extra is present AND a cadence is configured).
+    # max_instances:1 + coalesce collapse any overlap so a slow sweep can't stack repeating runs.
+    if app.job_queue is not None and cfg.scan_interval_hours:
+        app.job_queue.run_repeating(
+            scheduled_scan_job,
+            interval=cfg.scan_interval_hours * 3600.0,
+            first=SCHEDULED_SCAN_FIRST,
+            name="scheduled_scan",
+            job_kwargs={"max_instances": 1, "coalesce": True},
+        )
     return app

@@ -1,0 +1,29 @@
+# Always-on Matador bot for the Phase-6 forward-CLV paper-test. PAPER ONLY; never places orders.
+#   docker compose up -d --build     # start (production Kalshi reads, read-only)
+#   docker compose logs -f matador   # follow logs
+#   docker compose restart matador   # after a weekly model refresh (captures rebuild from the DB)
+#   docker compose down              # stop
+#
+# secrets/, config.yaml are mounted READ-ONLY; data/ (SQLite log + model.json) and logs/ are
+# writable. Nothing sensitive is baked into the image -- see Dockerfile + .dockerignore.
+services:
+  matador:
+    build: .
+    image: matador:latest
+    restart: unless-stopped          # survives crashes and host reboots
+    # The image runs as uid 1000. On a standard single-user Linux/WSL box that matches the host user,
+    # so the writable bind mounts (data/, logs/) just work once they exist (see README: `mkdir -p
+    # data logs` first). On a NON-uid-1000 host, run as your own uid instead:
+    #   user: "${UID:-1000}:${GID:-1000}"   # then: UID=$(id -u) GID=$(id -g) docker compose up -d
+    environment:
+      TZ: UTC                         # occurrence_datetime / capture scheduling assume UTC
+    volumes:
+      - ./secrets:/app/secrets:ro
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data             # writable: model.json (read) + matador.db (read/write) -- pre-create it
+      - ./logs:/app/logs             # writable: rotating matador.log -- pre-create it (else logging falls back to console)
+    logging:                          # cap Docker's own json-file logs (app also rotates logs/matador.log)
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

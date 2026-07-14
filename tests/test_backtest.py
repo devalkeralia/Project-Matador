@@ -1,13 +1,22 @@
 import pandas as pd
 import pytest
 
-from matador.backtest import de_vig, replay_predictions, roi_by_experience, sharpness, tennisdata_key
+from matador.backtest import de_vig, devig_shin, replay_predictions, roi_by_experience, sharpness, tennisdata_key
 from matador.names import canonical_key
 
 
 def test_de_vig_two_way():
     assert de_vig(2.0, 2.0) == pytest.approx(0.5)
     assert de_vig(1.5, 3.0) == pytest.approx(2 / 3)  # iw=.667,il=.333 -> .667
+
+
+def test_devig_shin_symmetric_sums_and_favorite_longshot_direction():
+    assert devig_shin(2.0, 2.0) == pytest.approx(0.5)   # no overround, symmetric
+    assert devig_shin(1.9, 1.9) == pytest.approx(0.5)   # symmetric even WITH an overround
+    # the two fair sides sum to 1 (the whole point of solving z)
+    assert devig_shin(1.30, 3.50) + devig_shin(3.50, 1.30) == pytest.approx(1.0)
+    # favorite-longshot correction: Shin lifts the favorite above the proportional estimate
+    assert devig_shin(1.30, 3.50) > de_vig(1.30, 3.50)
 
 
 def test_tennisdata_key_matches_canonical_key_incl_hyphen_apostrophe():

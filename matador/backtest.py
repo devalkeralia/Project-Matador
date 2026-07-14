@@ -7,6 +7,7 @@ matador.model.calibration, which measures p_model vs OUTCOMES.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -66,9 +67,35 @@ def replay_predictions(
 
 
 def de_vig(odds_w: float, odds_l: float) -> float:
-    """Two-way de-vig of decimal odds -> the market's implied P(winner)."""
+    """Two-way de-vig of decimal odds -> the market's implied P(winner). Multiplicative (proportional)
+    baseline; biased for heavy favorites (see devig_shin for the favorite-longshot correction)."""
     iw, il = 1.0 / odds_w, 1.0 / odds_l
     return iw / (iw + il)
+
+
+def devig_shin(odds_w: float, odds_l: float) -> float:
+    """Shin (1993) de-vig of two-way decimal odds -> the market's implied P(winner). Models a fraction
+    z of insider money, correcting the favorite-longshot bias the multiplicative de_vig carries; solves
+    for z by bisection so the two fair probabilities sum to 1. Winner-side only (matches de_vig's
+    signature). Ported from reference/tennis_edge.py:devig_shin -- applies ONLY to the sportsbook proxy
+    (Kalshi prices carry no vig)."""
+    iw, il = 1.0 / odds_w, 1.0 / odds_l
+    s = iw + il  # overround (> 1)
+
+    def probs(z):
+        def pi(x):
+            return (math.sqrt(z * z + 4 * (1 - z) * x * x / s) - z) / (2 * (1 - z))
+        return pi(iw), pi(il)
+
+    lo, hi = 0.0, 1.0 - 1e-9
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        pw, pl = probs(mid)
+        if pw + pl > 1.0:  # the fair-prob sum decreases in z
+            lo = mid
+        else:
+            hi = mid
+    return probs(0.5 * (lo + hi))[0]
 
 
 def tennisdata_key(name: str) -> str:

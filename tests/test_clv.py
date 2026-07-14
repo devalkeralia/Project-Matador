@@ -44,8 +44,9 @@ def _cfg():
 
 
 def _bet(**o):
-    f = dict(price=0.50, fill_price=None, closing_price=None, result=None, contracts_filled=None,
-             occurrence_datetime="2026-07-13T13:00:00Z", ts="2026-07-13T12:00:00Z", experience=100)
+    f = dict(price=0.50, fill_price=None, closing_price=None, closing_source=None, result=None,
+             contracts_filled=None, occurrence_datetime="2026-07-13T13:00:00Z",
+             ts="2026-07-13T12:00:00Z", experience=100)
     f.update(o)
     return f
 
@@ -68,6 +69,18 @@ def test_summarize_hit_rate_pnl_net_clv_and_gate():
     assert s["mean_clv"] == pytest.approx(((0.06 - 0.0175) + (0.04 - 0.0168) + (0.02 - 0.0175)) / 3)
     assert s["clv_ci"] is not None and s["go_live"] is False   # 3 bets/3 days, well under 200/30
     assert s["buckets"]["mid(50-200)"]["n"] == 3               # experience 100 -> mid bucket
+
+
+def test_summarize_tallies_capture_health():
+    bets = [
+        _bet(closing_source="auto", closing_price=0.52),
+        _bet(closing_source="manual", closing_price=0.53),
+        _bet(closing_source="missed:late[auto]"),      # missed -> no closing_price
+        _bet(closing_source="missed:no_two_sided_book[manual]"),
+        _bet(),                                          # never attempted -> uncounted
+    ]
+    caps = summarize(bets, _cfg(), seed=0)["captures"]
+    assert caps == {"auto": 1, "manual": 1, "missed": 2}
 
 
 def test_summarize_clv_entry_is_the_alert_price_not_the_fill():

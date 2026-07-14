@@ -193,7 +193,8 @@ def test_format_close_ok_and_fail():
 def _summary(**o) -> dict:
     s = dict(n_opportunities=0, n_results=0, wins=0, hit_rate=None, total_pnl=0.0, staked=0.0, roi=None,
              n_clv=0, n_clusters=0, mean_clv=None, mean_gross_clv=None, clv_ci=None,
-             min_effect_size=0.005, min_clusters=30, go_live=False, buckets={})
+             min_effect_size=0.005, min_clusters=30, go_live=False, buckets={},
+             captures={"auto": 0, "manual": 0, "missed": 0})
     s.update(o)
     return s
 
@@ -204,8 +205,10 @@ def test_format_stats_empty_and_populated():
     out = format_stats(_summary(n_opportunities=3, n_results=2, wins=1, hit_rate=0.5, total_pnl=12.5,
                                 staked=100.0, roi=0.125, n_clv=2, n_clusters=2, mean_clv=0.02,
                                 mean_gross_clv=0.03, clv_ci=(-0.01, 0.05),
-                                buckets={"mid(50-200)": {"n": 2, "mean_clv": 0.02}}))
+                                buckets={"mid(50-200)": {"n": 2, "mean_clv": 0.02}},
+                                captures={"auto": 5, "manual": 1, "missed": 2}))
     assert "1W/1L" in out and "hit rate 50%" in out
+    assert "Captures: 5 auto / 1 manual / 2 missed" in out
     assert "Mean net CLV +2.0% (gross +3.0%) · 95% CI [-1.0%, +5.0%]" in out
     assert "by experience: mid(50-200) +2.0% (n=2)" in out
     assert "not yet" in out and "2/200" in out and "2/30" in out

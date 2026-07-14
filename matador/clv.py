@@ -74,7 +74,13 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
     rows = []  # (net_clv, gross_clv, day, experience) per CLV-eligible bet
     total_pnl = staked = 0.0
     wins = results = 0
+    captures = {"auto": 0, "manual": 0, "missed": 0}  # closing-line capture health (data quality)
     for b in bets:
+        src = b["closing_source"]  # None (not attempted) | 'auto' | 'manual' | 'missed:<reason>[<src>]'
+        if src is not None:        # count capture attempts regardless of void/result (measures the mechanism)
+            bucket = "missed" if src.startswith("missed") else src
+            if bucket in captures:
+                captures[bucket] += 1
         res = b["result"]
         if res == "void":
             continue  # walkover/refund -- excluded from every metric
@@ -118,4 +124,5 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
         "min_clusters": cfg.min_clv_clusters,
         "go_live": go_live,
         "buckets": {lab: {"n": len(v), "mean_clv": float(np.mean(v))} for lab, v in buckets.items()},
+        "captures": captures,  # {auto, manual, missed} -- closing-line capture health
     }

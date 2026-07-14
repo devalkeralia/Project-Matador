@@ -224,6 +224,8 @@ def format_stats(s: dict) -> str:
         lines.append(f"Net P&L: ${s['total_pnl']:+.2f} on ${s['staked']:.0f} staked{roi}")
     else:
         lines.append("Trades recorded: none yet (use /result)")
+    c = s["captures"]
+    lines.append(f"Captures: {c['auto']} auto / {c['manual']} manual / {c['missed']} missed")
     lines += ["", "Closing-line value (the go-live metric, NET of fees):"]
     if s["n_clv"]:
         lo, hi = s["clv_ci"]

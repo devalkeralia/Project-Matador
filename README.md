@@ -62,14 +62,14 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-**Phase 6 — forward CLV paper-testing (the go-live bar):** run the bot through live tournaments,
-capture closing lines (`/close`, or the auto-scheduler when the bot is always-on), record outcomes
-(`/result`), and watch `/stats` — go live only when the cluster-bootstrap 95% CI lower bound on mean
-CLV clears 0 over ~200+ bets. Recalibrate the liquidity gate on the August Masters (the current
-`min_liquidity`/`max_spread` are interim, set on a thin slate). To run the bot: put `TELEGRAM_TOKEN`
-+ `TELEGRAM_CHAT_ID` in `secrets/.env`, then `.venv/bin/python scripts/bot.py`. See
-[`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"** for the full
-list of deferred features, monitored gaps, and the validation gate.
+The infrastructure and the hardened go-live gate are built (Phases 1–7). What remains is the
+**forward CLV paper-test itself** — run the bot through live tournaments and accumulate the sample —
+plus **one prerequisite before a "MET" can mean +EV: a live sharp-line reference** (the gate compares
+to Kalshi's own close, which can't separate a soft line from model error). See the
+**Phase-6 forward-CLV paper-test runbook** below for the full protocol and the hardened go-live
+criteria, and [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"** for the
+sharp-reference design, deferred model levers, and monitored gaps. To run the bot: put `TELEGRAM_TOKEN`
++ `TELEGRAM_CHAT_ID` in `secrets/.env`, then `.venv/bin/python scripts/bot.py` (or `docker compose up -d`).
 
 ## Run as a service
 

@@ -82,6 +82,8 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")   # concurrent reads don't block the capture writer
+    conn.execute("PRAGMA busy_timeout = 5000")  # a locked writer waits up to 5s instead of erroring out (scan + capture jobs run on separate threads)
     return conn
 
 
@@ -183,6 +185,17 @@ def settled_bets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         "       oc.result, oc.contracts_filled, oc.pnl, oc.clv "
         "FROM opportunities o LEFT JOIN outcomes oc ON oc.opp_id = o.id ORDER BY o.id"
     ).fetchall()
+
+
+def open_exposure(conn: sqlite3.Connection) -> float:
+    """Total suggested stake ($) across logged opportunities with no recorded outcome yet -- the
+    aggregate open exposure the alert layer warns on (correlated same-day alerts can sum past the
+    bankroll; there's no per-alert cap for that)."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(o.suggested_stake), 0) FROM opportunities o "
+        "LEFT JOIN outcomes oc ON oc.opp_id = o.id WHERE oc.result IS NULL"
+    ).fetchone()
+    return float(row[0])
 
 
 def pending_captures(conn: sqlite3.Connection) -> list[sqlite3.Row]:

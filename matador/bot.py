@@ -45,7 +45,7 @@ HELP = (
     "/find [atp|wta] — list open matches; checkable ones ranked by model strength\n"
     "/scan — sweep all open ATP/WTA markets for value\n"
     "/recent [n] — the last n logged opportunities (default 10)\n"
-    "/close [opp_id] — capture the closing line near match start (no id = all pending)\n"
+    "/close [opp_id] [pre] — capture the closing line near match start (no id = all pending; 'pre' = confirm pre-match on an untimed market)\n"
     "/result <opp_id> <win|loss> <fill_price> [contracts] — record how a trade went\n"
     "/stats — hit rate, P&L, and closing-line value (the go-live metric)\n"
     "/notes — how to read an alert & the /check breakdown\n"
@@ -83,7 +83,7 @@ _RECENT_DEFAULT = 10
 _RECENT_MAX = 50
 _FIND_TOP_N = 5
 CAPTURE_BEFORE_START = timedelta(minutes=5)   # auto-capture this long BEFORE scheduled start (guaranteed pre-match)
-CAPTURE_LATE_GRACE = timedelta(minutes=15)    # refuse a capture more than this past scheduled start (Kalshi trades in-play -> price would no longer be the pre-match CLOSE)
+CAPTURE_LATE_GRACE = timedelta(minutes=5)     # refuse a capture more than this past scheduled start. Kalshi trades tennis IN-PLAY (market stays 'active' through the match), so status alone can't tell pre-match from in-play -- a tight grace is the only real guard against snapshotting a live price as the "close"
 RESCHEDULE_EPSILON = timedelta(minutes=2)     # ignore sub-epsilon start-time drift; a larger future shift = a postponement -> re-arm the capture
 
 
@@ -141,6 +141,18 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
 
 # ---- sync cores (PTB-free, dependency-injected: client + conn passed in) ----
 
+def _exposure_warning(conn, cfg) -> str:
+    """A warning line when total OPEN (unsettled) suggested stake exceeds max_open_exposure_pct of
+    bankroll -- there's no per-alert cap for correlated same-day alerts, and the owner trades manually,
+    so a flag is the right lever. Empty string when within the cap."""
+    cap = cfg.max_open_exposure_pct * cfg.bankroll
+    exposure = storage.open_exposure(conn)
+    if exposure > cap:
+        return (f"\n⚠️ Open exposure ${exposure:.0f} exceeds {cfg.max_open_exposure_pct:.0%} of bankroll "
+                f"(${cap:.0f}) across unsettled bets — consider skipping or sizing down.")
+    return ""
+
+
 def run_check(client, model, cfg, conn, tour: str, a: str, b: str) -> str:
     """Evaluate one match; on a qualifying edge log it (deduped) and format the alert, else a
     friendly abstain. On a dedup the alert shows the PRIOR opp id and a not-re-logged note."""
@@ -152,10 +164,11 @@ def run_check(client, model, cfg, conn, tour: str, a: str, b: str) -> str:
         return format_abstain(result.reason)
     opp = result.opportunity
     opp_id = log_opportunity(conn, opp)
+    warn = _exposure_warning(conn, cfg)
     if opp_id is None:  # a prior alert for this contract+side still stands
         prior = last_opportunity(conn, opp.market_ticker, opp.side)
-        return format_alert(opp, prior["id"], cfg.bankroll) + "\n(already logged — not re-logged)" + _NOTES_FOOTER
-    return format_alert(opp, opp_id, cfg.bankroll) + _NOTES_FOOTER
+        return format_alert(opp, prior["id"], cfg.bankroll) + "\n(already logged — not re-logged)" + warn + _NOTES_FOOTER
+    return format_alert(opp, opp_id, cfg.bankroll) + warn + _NOTES_FOOTER
 
 
 def run_scan(client, model, cfg, conn, tours) -> str:
@@ -177,7 +190,7 @@ def run_scan(client, model, cfg, conn, tours) -> str:
             if opp_id is None:  # still-standing edge -> show it with its prior id, don't re-log
                 opp_id = last_opportunity(conn, opp.market_ticker, opp.side)["id"]
             alerts.append((opp, opp_id))
-    return format_scan(alerts, tally, cfg.bankroll)
+    return format_scan(alerts, tally, cfg.bankroll) + _exposure_warning(conn, cfg)
 
 
 def run_recent(conn, n: int) -> str:
@@ -215,16 +228,23 @@ def _mark_missed(conn, opp_id: int, reason: str, source: str) -> None:
     storage.record_outcome(conn, opp_id, closing_captured_at=_now_iso(), closing_source=f"missed:{reason}[{source}]")
 
 
-def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | None = None) -> dict:
+def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | None = None,
+                  force_prematch: bool = False) -> dict:
     """Snapshot the CLOSING LINE (same-side MID) for a logged opportunity -- the PRE-match price.
-    Read-only against Kalshi + a paper log write; shared by /close and the auto-job. Refuses (marks
-    'missed', never fabricates) when the market is not active or we're materially past scheduled
-    start (Kalshi trades in-play, so a late snapshot would leak the outcome into CLV)."""
+    Read-only against Kalshi + a paper log write; shared by /close and the auto-job. FAIL-CLOSED:
+    refuses (marks 'missed', never fabricates) when the market is not active, we're materially past
+    scheduled start, OR the scheduled start is UNKNOWN -- because Kalshi trades tennis in-play (status
+    stays 'active'), so with no start time we cannot tell pre-match from in-play and would risk
+    recording a live price as the 'close'. `force_prematch=True` (a human /close ... pre) overrides
+    the unknown-start refusal when the owner confirms the match hasn't begun."""
     opp = get_opportunity(conn, opp_id)
     if opp is None:
         return {"opp_id": opp_id, "ok": False, "reason": "no_such_opp"}
     now = now or datetime.now(timezone.utc)
     start = _parse_dt(opp["occurrence_datetime"])
+    if start is None and not force_prematch:  # can't verify pre-match -> refuse rather than poison CLV
+        _mark_missed(conn, opp_id, "unknown_start", source)
+        return {"opp_id": opp_id, "ok": False, "reason": "unknown_start"}
     if start is not None and now > start + CAPTURE_LATE_GRACE:
         _mark_missed(conn, opp_id, "late", source)
         return {"opp_id": opp_id, "ok": False, "reason": "too_late"}
@@ -286,14 +306,15 @@ def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int
     return format_result(opp, result, fill_price, contracts, pnl)
 
 
-def run_close(client, conn, opp_id: int | None = None) -> str:
-    """Capture the closing line for one opp, or (no id) every opportunity still missing one."""
+def run_close(client, conn, opp_id: int | None = None, *, force_prematch: bool = False) -> str:
+    """Capture the closing line for one opp, or (no id) every opportunity still missing one.
+    `force_prematch` (from `/close <id> pre`) lets the owner confirm an untimed market is pre-match."""
     if opp_id is not None:
-        return format_close(capture_close(client, conn, opp_id, source="manual"))
+        return format_close(capture_close(client, conn, opp_id, source="manual", force_prematch=force_prematch))
     pend = pending_captures(conn)
     if not pend:
         return "Nothing to close — every logged opportunity already has a closing line."
-    results = [capture_close(client, conn, r["id"], source="manual") for r in pend]
+    results = [capture_close(client, conn, r["id"], source="manual") for r in pend]  # batch never force-captures
     return f"Captured {sum(r['ok'] for r in results)}/{len(results)} closing lines:\n" + "\n".join(
         format_close(r) for r in results)
 
@@ -382,9 +403,9 @@ def _result_job(cfg, opp_id, result, fill_price, contracts) -> str:
     return _with_conn(cfg, lambda conn: run_result(conn, opp_id, result, fill_price, contracts, cfg))
 
 
-def _close_job(cfg, demo, opp_id) -> str:
+def _close_job(cfg, demo, opp_id, force_prematch=False) -> str:
     with _client(cfg, demo) as client:
-        return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id))
+        return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id, force_prematch=force_prematch))
 
 
 def _auto_capture_job(cfg, demo, opp_id) -> dict:
@@ -473,14 +494,17 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     bd = context.bot_data
     opp_id = None
+    force_prematch = False
     if context.args:
         if not context.args[0].isdigit():
-            await update.message.reply_text("Usage: /close [opp_id]  (no id = capture all pending)")
+            await update.message.reply_text(
+                "Usage: /close [opp_id] [pre]  (no id = capture all pending; 'pre' = I confirm it's pre-match)")
             return
         opp_id = int(context.args[0])
+        force_prematch = len(context.args) > 1 and context.args[1].lower() == "pre"
     else:
         await update.message.reply_text("Capturing closing lines…")  # batch read; takes a moment
-    text = await asyncio.to_thread(_close_job, bd["cfg"], bd["demo"], opp_id)
+    text = await asyncio.to_thread(_close_job, bd["cfg"], bd["demo"], opp_id, force_prematch)
     await _reply_chunked(update, text)
 
 
@@ -540,9 +564,23 @@ def schedule_pending_captures(application: Application) -> int:
 
 async def capture_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """One-shot job: reconcile against the live market, then either capture the closing line or
-    (if the match was postponed) re-arm for the corrected start. Confirms to the owner chat."""
+    (if the match was postponed) re-arm for the corrected start. Confirms to the owner chat.
+    Retries a transient Kalshi read a few times before giving up, so a momentary blip in the ~5-min
+    pre-start window doesn't silently lose the closing-line datapoint (the CLV baseline)."""
     bd = context.bot_data
-    res = await asyncio.to_thread(_auto_capture_job, bd["cfg"], bd["demo"], context.job.data)
+    res = None
+    for attempt in range(3):
+        try:
+            res = await asyncio.to_thread(_auto_capture_job, bd["cfg"], bd["demo"], context.job.data)
+            break
+        except Exception:
+            log.warning("auto-capture attempt %d/3 failed for opp %s", attempt + 1, context.job.data, exc_info=True)
+            if attempt < 2:
+                await asyncio.sleep(5)
+    if res is None:
+        # All reads failed: leave the row pending (no fabricated close). The next scheduled scan /
+        # startup re-arms it; if the match is over by then, capture_close marks it missed. No hot loop.
+        return
     if res["action"] == "rescheduled":
         # The fired one-shot is already gone from the queue, so re-arming close:{id} can't clash.
         schedule_pending_captures(context.application)
@@ -578,8 +616,35 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             await context.bot.send_message(chat_id=bd["chat_id"], text=chunk)
 
 
+# ---- daily heartbeat (liveness: a silent outage otherwise looks like 'no edge found') ----
+
+def _heartbeat_text(conn, cfg) -> str:
+    s = summarize(settled_bets(conn), cfg)
+    c = s["captures"]
+    return (f"💓 Matador OK — {s['n_opportunities']} opps, {s['n_clv']} with a close over {s['n_clusters']} week(s); "
+            f"captures {c['auto']}a/{c['manual']}m/{c['missed']}x; {len(pending_captures(conn))} pending; "
+            f"open exposure ${storage.open_exposure(conn):.0f}.")
+
+
+def _heartbeat_job(cfg) -> str:
+    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg))
+
+
+async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Daily DM so the owner can tell 'running, no edge yet' from 'silently down' -- a wedged
+    long-poll / token conflict otherwise looks identical to a quiet market for days."""
+    bd = context.bot_data
+    try:
+        msg = await asyncio.to_thread(_heartbeat_job, bd["cfg"])
+    except Exception:
+        log.exception("heartbeat failed")
+        return
+    await context.bot.send_message(chat_id=bd["chat_id"], text=msg)
+
+
 async def on_startup(application: Application) -> None:
-    schedule_pending_captures(application)
+    n = schedule_pending_captures(application)
+    log.info("Matador started; reconciled %d pending closing-line capture(s)", n)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -613,6 +678,14 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
             interval=cfg.scan_interval_hours * 3600.0,
             first=SCHEDULED_SCAN_FIRST,
             name="scheduled_scan",
+            job_kwargs={"max_instances": 1, "coalesce": True},
+        )
+    if app.job_queue is not None and cfg.heartbeat_hours:
+        app.job_queue.run_repeating(
+            heartbeat_job,
+            interval=cfg.heartbeat_hours * 3600.0,
+            first=cfg.heartbeat_hours * 3600.0,  # not on startup -- one interval in
+            name="heartbeat",
             job_kwargs={"max_instances": 1, "coalesce": True},
         )
     return app

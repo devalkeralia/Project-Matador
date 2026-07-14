@@ -76,12 +76,25 @@ def test_flagged_when_edge_is_implausibly_large():
     assert r.status == "alert" and r.flagged is True  # huge gap -> adverse-selection flag
 
 
-def test_thin_player_gets_a_kelly_haircut_and_records_experience():
+def test_thin_player_abstains_established_alerts():
+    # experience < thin_matches (50) -> abstain (thin Elo is overconfident); >= 50 alerts normally.
     thin = _eval(FakeModel(WinProbability(0.70, "ok", experience=30)), LIQUID_BOOK, make_cfg())
     established = _eval(FakeModel(WinProbability(0.70, "ok", experience=100)), LIQUID_BOOK, make_cfg())
-    assert thin.status == "alert" and established.status == "alert"
-    assert thin.opportunity.experience == 30
-    assert thin.opportunity.suggested_stake < established.opportunity.suggested_stake  # haircut applied
+    assert thin.status == "abstain" and thin.reason == "thin_player"
+    assert thin.diagnostics is not None                      # priced-but-abstained -> /check still shows the analysis
+    assert established.status == "alert" and established.opportunity.experience == 100
+    # setting thin_matches == min_matches disables the abstain (experience is always >= min_matches)
+    reenabled = _eval(FakeModel(WinProbability(0.70, "ok", experience=30)), LIQUID_BOOK, make_cfg(thin_matches=20))
+    assert reenabled.status == "alert"
+
+
+def test_paper_flat_stake_overrides_kelly():
+    kelly = _eval(FakeModel(WinProbability(0.60, "ok")), LIQUID_BOOK, make_cfg())
+    flat = _eval(FakeModel(WinProbability(0.60, "ok")), LIQUID_BOOK, make_cfg(paper_flat_stake=20.0))
+    assert flat.status == "alert"
+    assert flat.opportunity.suggested_stake == pytest.approx(20.0)
+    assert flat.opportunity.contracts == int(20.0 // flat.opportunity.price)   # floored to whole contracts
+    assert flat.opportunity.suggested_stake != pytest.approx(kelly.opportunity.suggested_stake)
 
 
 def test_abstain_empty_book():
@@ -391,13 +404,16 @@ def test_list_open_matches_flags_modellable_and_strength(tmp_path):
 
 
 def test_real_model_through_engine_alerts_and_enforces_staleness(tmp_path):
+    # thin_matches=20 so the tiny fixture's 40/50-match players clear the thin-abstain -- this test
+    # targets the staleness gate + real-Model flow, not thinness.
+    cfg = make_cfg(thin_matches=20)
     # Fresh ratings: the real Model.predict feeds evaluate_resolution -> alert on the favored side.
     fresh = tmp_path / "fresh.json"
     fresh.write_text(json.dumps(_tiny_artifact("2026-07-01")))
-    r = _eval(Model.from_artifact(fresh), LIQUID_BOOK, make_cfg(), surface="Hard", best_of=3)
+    r = _eval(Model.from_artifact(fresh), LIQUID_BOOK, cfg, surface="Hard", best_of=3)
     assert r.status == "alert" and r.opportunity.side == "yes"
     # Stale ratings: the staleness gate (now always on, even via event_date) abstains.
     stale = tmp_path / "stale.json"
     stale.write_text(json.dumps(_tiny_artifact("2024-01-01")))
-    r2 = _eval(Model.from_artifact(stale), LIQUID_BOOK, make_cfg(), surface="Hard", best_of=3)
+    r2 = _eval(Model.from_artifact(stale), LIQUID_BOOK, cfg, surface="Hard", best_of=3)
     assert r2.status == "abstain" and r2.reason == "stale_ratings"

@@ -68,12 +68,16 @@ class Config(BaseModel):
     max_price: float = 0.95
     fee_coefficient: float = 0.07
     adverse_gap: float = 0.15  # flag alerts whose net edge exceeds this for manual "recent news?" scrutiny (late injury/withdrawal the Elo can't see)
-    thin_matches: int = 50          # a player with fewer prior matches is "thin" (overconfident Elo): flag the alert, haircut the stake, and segment CLV/calibration by this
-    thin_kelly_haircut: float = 0.5  # extra Kelly-fraction multiplier applied to thin-player bets (uncertainty-aware sizing)
-    min_effect_size: float = 0.005   # go-live gate: the NET-CLV 95% CI lower bound must exceed this (a margin above break-even, in price units ~0.5c). Tunable.
-    min_clv_clusters: int = 30       # go-live gate: require at least this many independent day-clusters (alongside >= 200 bets)
+    thin_matches: int = 50          # a player with fewer prior matches is "thin" (overconfident Elo): ABSTAIN from alerting on them, and segment CLV/calibration by this. Set == min_matches to disable the thin-abstain.
+    thin_kelly_haircut: float = 0.5  # (superseded: thin players now abstain rather than being haircut-and-alerted; kept for a possible future re-enable)
+    paper_flat_stake: float | None = None  # if set, suggest this FLAT $ stake instead of Kelly (CLV is stake-independent; avoids priming Kelly-sized real bets on an unvalidated p_model). None = Kelly.
+    min_effect_size: float = 0.015   # go-live gate: NET-CLV 95% CI lower bound must exceed this. ~1.5c, sized to cover real slippage + Kalshi's per-order round-up fee + the ask-vs-mid entry basis (a 0.5c bar was below those). Tunable.
+    min_clv_clusters: int = 12       # go-live gate: require at least this many independent ISO-WEEK clusters (alongside >= 200 bets); weeks (not days) are the correlation unit
+    max_missed_capture_rate: float = 0.30  # go-live gate: refuse if more than this fraction of closing-line captures were missed (a thin/biased sample)
     scan_interval_hours: float | None = None  # scheduled systematic /scan cadence in hours (removes owner-timing selection bias); None disables the timer
     scan_announce: bool = False      # DM the owner on every scheduled scan; default only DMs when an alert fires (avoids ping fatigue)
+    heartbeat_hours: float | None = 24.0  # daily liveness DM (scans/pending/missed/exposure) so a silent outage is visible; None disables
+    max_open_exposure_pct: float = 0.20  # warn when total open (unsettled) suggested stake exceeds this fraction of bankroll (correlated same-day alerts have no per-alert cap)
     tours: list[str] = Field(default_factory=lambda: ["ATP", "WTA"])
     series: SeriesConfig = Field(default_factory=SeriesConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
@@ -88,7 +92,7 @@ class Config(BaseModel):
             raise ValueError("bankroll must be > 0")
         return v
 
-    @field_validator("kelly_fraction", "max_stake_pct", "thin_kelly_haircut")
+    @field_validator("kelly_fraction", "max_stake_pct", "thin_kelly_haircut", "max_open_exposure_pct")
     @classmethod
     def _fraction_range(cls, v: float) -> float:
         if not (0 < v <= 1):
@@ -103,6 +107,13 @@ class Config(BaseModel):
             raise ValueError("must be >= 0")
         return v
 
+    @field_validator("max_missed_capture_rate")
+    @classmethod
+    def _rate_range(cls, v: float) -> float:
+        if not (0 <= v <= 1):
+            raise ValueError("max_missed_capture_rate must be in [0, 1]")
+        return v
+
     @field_validator("max_price")
     @classmethod
     def _max_price_range(cls, v: float) -> float:
@@ -110,11 +121,11 @@ class Config(BaseModel):
             raise ValueError("max_price must be in (0, 1)")
         return v
 
-    @field_validator("scan_interval_hours")
+    @field_validator("scan_interval_hours", "heartbeat_hours", "paper_flat_stake")
     @classmethod
-    def _scan_interval_positive(cls, v: float | None) -> float | None:
-        if v is not None and v <= 0:  # a repeating job needs a positive period; omit (None) to disable
-            raise ValueError("scan_interval_hours must be > 0 (or omit to disable)")
+    def _positive_or_none(cls, v: float | None) -> float | None:
+        if v is not None and v <= 0:  # a period/stake must be positive when set; omit (None) to disable
+            raise ValueError("must be > 0 (or omit)")
         return v
 
     @model_validator(mode="after")

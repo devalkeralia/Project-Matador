@@ -134,11 +134,13 @@ def evaluate_resolution(
         depth=round(depth_at_ask(orderbook, "yes", quotes.yes_ask), 2) if quotes.yes_ask is not None else None,
     )
 
-    # Uncertainty-aware sizing: haircut the Kelly fraction for THIN players (their Elo is
-    # overconfident), so a real-but-uncertain edge is sized down rather than suppressed.
-    thin = wp.experience is not None and wp.experience < cfg.thin_matches
-    kf = cfg.kelly_fraction * cfg.thin_kelly_haircut if thin else cfg.kelly_fraction
-    edge = evaluate_market(wp.p, quotes.yes_ask, quotes.no_ask, cfg, kelly_fraction=kf)
+    # Abstain on THIN players (few prior matches): their Elo is overconfident (held-out Brier ~0.23
+    # vs ~0.20 for established) and they were the worst bets vs the sharp close, so a thin "edge" is
+    # more likely model error than value -- don't alert (and don't let them pollute the CLV sample).
+    # Tunable via thin_matches (set it to min_matches to disable this abstain).
+    if wp.experience is not None and wp.experience < cfg.thin_matches:
+        return _abstain("thin_player", diag)
+    edge = evaluate_market(wp.p, quotes.yes_ask, quotes.no_ask, cfg, kelly_fraction=cfg.kelly_fraction)
     if edge is None:
         return _abstain("no_edge", diag)
 
@@ -150,6 +152,14 @@ def evaluate_resolution(
     depth = depth_at_ask(orderbook, edge.side, edge.price)
     if depth < cfg.min_liquidity:
         return _abstain("insufficient_liquidity", diag)
+
+    # Flat unit stakes during the paper phase: CLV is stake-independent, so Kelly on an unvalidated
+    # p_model buys nothing now and would only prime Kelly-sized real bets on a ~0 edge. When
+    # paper_flat_stake is set, suggest that fixed $ (floored to whole contracts); Kelly returns post go-live.
+    stake, contracts = edge.stake, edge.contracts
+    if cfg.paper_flat_stake is not None:
+        stake = cfg.paper_flat_stake
+        contracts = int(stake // edge.price)
 
     flagged = edge.net_edge >= cfg.adverse_gap
     opp = Opportunity(
@@ -164,8 +174,8 @@ def evaluate_resolution(
         price=edge.price,
         p_model=round(edge.p, 4),
         net_edge=round(edge.net_edge, 4),
-        suggested_stake=round(edge.stake, 2),
-        contracts=edge.contracts,
+        suggested_stake=round(stake, 2),
+        contracts=contracts,
         liquidity=round(depth, 2),
         trigger_reason="prematch_value",
         occurrence_datetime=resolution.occurrence_datetime,

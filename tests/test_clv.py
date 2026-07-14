@@ -52,9 +52,10 @@ def _bet(**o):
 
 
 def test_summarize_hit_rate_pnl_net_clv_and_gate():
+    # occurrence dates are a WEEK apart so they land in 3 distinct ISO-week clusters
     bets = [
-        _bet(price=0.50, fill_price=0.50, contracts_filled=100, closing_price=0.56, result="win", occurrence_datetime="2026-07-13T13:00Z"),
-        _bet(price=0.40, fill_price=0.40, contracts_filled=50, closing_price=0.44, result="loss", occurrence_datetime="2026-07-14T13:00Z"),
+        _bet(price=0.50, fill_price=0.50, contracts_filled=100, closing_price=0.56, result="win", occurrence_datetime="2026-07-01T13:00Z"),
+        _bet(price=0.40, fill_price=0.40, contracts_filled=50, closing_price=0.44, result="loss", occurrence_datetime="2026-07-08T13:00Z"),
         _bet(price=0.50, closing_price=0.52, occurrence_datetime="2026-07-15T13:00Z"),   # closing but no fill -> CLV only
         _bet(result="void", closing_price=0.60, occurrence_datetime="2026-07-16T13:00Z"),  # void -> excluded everywhere
         _bet(),  # nothing recorded -> ignored
@@ -64,11 +65,38 @@ def test_summarize_hit_rate_pnl_net_clv_and_gate():
     assert s["n_results"] == 2 and s["wins"] == 1 and s["hit_rate"] == pytest.approx(0.5)  # void NOT counted
     assert s["total_pnl"] == pytest.approx(48.25 - 20.84)   # win +48.25, loss -(20 + 0.84 fee)
     # entry = alert price; NET clv = gross - fee*entry*(1-entry); void row excluded
-    assert s["n_clv"] == 3 and s["n_clusters"] == 3
+    assert s["n_clv"] == 3 and s["n_clusters"] == 3          # 3 distinct ISO weeks
     assert s["mean_gross_clv"] == pytest.approx((0.06 + 0.04 + 0.02) / 3)
     assert s["mean_clv"] == pytest.approx(((0.06 - 0.0175) + (0.04 - 0.0168) + (0.02 - 0.0175)) / 3)
-    assert s["clv_ci"] is not None and s["go_live"] is False   # 3 bets/3 days, well under 200/30
+    assert s["clv_ci"] is not None and s["go_live"] is False   # 3 bets/3 weeks, well under 200/12
     assert s["buckets"]["mid(50-200)"]["n"] == 3               # experience 100 -> mid bucket
+
+
+def _bet_in_week(week_idx, **o):
+    from datetime import date
+    monday = date.fromisocalendar(2026, week_idx + 1, 1).isoformat()  # Monday of a distinct ISO week
+    return _bet(occurrence_datetime=f"{monday}T12:00:00Z", **o)
+
+
+def test_summarize_go_live_true_path_and_cogates():
+    # The TRUE go-live path: 240 bets over 12 ISO weeks, gross CLV +6c @ 0.70 (net ~+4.5c > 1.5c bar),
+    # wins recorded (ROI > 0), 0 missed -> MET. Then flip each co-gate and confirm it blocks.
+    def sample(result="win", extra_missed=0):
+        bets = [_bet_in_week(i % 12, price=0.70, closing_price=0.76, closing_source="auto",
+                             fill_price=0.70, contracts_filled=1, result=result) for i in range(240)]
+        bets += [_bet_in_week(0, closing_source="missed:late[auto]") for _ in range(extra_missed)]
+        return bets
+
+    met = summarize(sample(), _cfg(), seed=0)
+    assert met["n_clv"] == 240 and met["n_clusters"] == 12 and met["clv_ci"][0] > _cfg().min_effect_size
+    assert met["roi"] > 0 and met["missed_rate"] == 0.0
+    assert met["go_live"] is True                                   # all co-gates clear
+
+    losing = summarize(sample(result="loss"), _cfg(), seed=0)       # CLV still +, but realized ROI < 0
+    assert losing["roi"] < 0 and losing["go_live"] is False         # ROI co-gate blocks
+
+    thin = summarize(sample(extra_missed=130), _cfg(), seed=0)      # 130/(240+130) missed = 35% > 30%
+    assert thin["missed_rate"] > _cfg().max_missed_capture_rate and thin["go_live"] is False
 
 
 def test_summarize_tallies_capture_health():

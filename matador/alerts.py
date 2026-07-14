@@ -48,6 +48,7 @@ _ABSTAIN_TEXT = {
     "spread_too_wide": "The bid–ask spread is too wide to trust the price.",
     "insufficient_liquidity": "Not enough order-book depth at the target price.",
     "stale_ratings": "Those player ratings are too stale to price this match safely.",
+    "thin_player": "One player has too few prior matches for a reliable rating — skipping (thin-player Elo is overconfident).",
 }
 
 _ABSTAIN_PREFIX = (
@@ -102,6 +103,7 @@ def format_no_alert(reason: str, d) -> str:
         "one_sided_book": "No alert — one side of the order book is empty, so I can't price a fair spread.",
         "spread_too_wide": "No alert — even where there's an edge, the bid–ask spread is too wide to trust the price.",
         "insufficient_liquidity": "No alert — there isn't enough resting order-book depth at the target price to fill a stake.",
+        "thin_player": "No alert — one player has too few prior matches; the model's rating is overconfident there, so I don't trust a 'value' signal (thin-player bets were the worst vs the sharp close).",
     }.get(reason, format_abstain(reason))
 
     depth = f"Order-book depth ~{_compact(d.depth)} contracts" if d.depth is not None else "Order-book depth: n/a"
@@ -206,6 +208,8 @@ def format_close(r: dict) -> str:
             "no_price": f"Couldn't read a two-sided price for opp #{r['opp_id']} — marked missed (excluded from CLV).",
             "too_late": f"Opp #{r['opp_id']} is past its scheduled start — too late for a clean pre-match close; marked missed.",
             "not_active": f"Opp #{r['opp_id']}'s market isn't active ({r.get('status')}) — marked missed (excluded from CLV).",
+            "unknown_start": f"Opp #{r['opp_id']} has no scheduled start, so I can't tell pre-match from in-play — "
+                             f"marked missed. If you're sure it hasn't started, re-run: /close {r['opp_id']} pre",
         }.get(r["reason"], f"Close failed for opp #{r['opp_id']}: {r['reason']}")
     delta_cents = (r["closing_price"] - r["entry_price"]) * 100
     return (
@@ -229,17 +233,23 @@ def format_stats(s: dict) -> str:
     lines += ["", "Closing-line value (the go-live metric, NET of fees):"]
     if s["n_clv"]:
         lo, hi = s["clv_ci"]
-        lines.append(f"  {s['n_clv']} bet(s) over {s['n_clusters']} day(s)")
-        lines.append(f"  Mean net CLV {s['mean_clv']:+.1%} (gross {s['mean_gross_clv']:+.1%}) · 95% CI [{lo:+.1%}, {hi:+.1%}]")
+        lines.append(f"  {s['n_clv']} bet(s) over {s['n_clusters']} week(s)")
+        lines.append(f"  Mean net CLV {s['mean_clv']:+.1%} (gross {s['mean_gross_clv']:+.1%}) · 95% CI (BCa) [{lo:+.1%}, {hi:+.1%}]")
         if s["buckets"]:
             seg = ", ".join(f"{lab} {v['mean_clv']:+.1%} (n={v['n']})" for lab, v in sorted(s["buckets"].items()))
             lines.append(f"  by experience: {seg}")
         if s["go_live"]:
-            gate = "✅ MET"
+            lines.append("  Go-live gate: ✅ MET")
         else:
-            gate = (f"not yet — need net-CLV CI lower bound > {s['min_effect_size']:+.1%}, "
-                    f"≥ {MIN_BETS} bets ({s['n_clv']}/{MIN_BETS}), ≥ {s['min_clusters']} days ({s['n_clusters']}/{s['min_clusters']})")
-        lines.append(f"  Go-live gate: {gate}")
+            roi = s["roi"]
+            roi_str = f"{roi:+.1%}" if roi is not None else "n/a"
+            # every co-gate that must clear before real money (all AND-ed)
+            lines.append("  Go-live gate: not yet — needs ALL of:")
+            lines.append(f"    · CI lower bound > {s['min_effect_size']:+.1%}  (now {lo:+.1%})")
+            lines.append(f"    · ≥ {MIN_BETS} bets  ({s['n_clv']}/{MIN_BETS})")
+            lines.append(f"    · ≥ {s['min_clusters']} weeks  ({s['n_clusters']}/{s['min_clusters']})")
+            lines.append(f"    · realized net-ROI ≥ 0  ({roi_str})")
+            lines.append(f"    · missed-capture rate ≤ {s['max_missed_rate']:.0%}  (now {s['missed_rate']:.0%})")
     else:
         lines.append("  No closing lines captured yet (use /close near match start).")
     return "\n".join(lines)

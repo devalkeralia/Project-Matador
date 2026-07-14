@@ -20,17 +20,31 @@ fee_coefficient: 0.07
 adverse_gap: 0.15   # flag alerts whose net edge exceeds this for manual "recent news?" scrutiny
 
 # Thin-player handling (Elo is overconfident on players with few prior matches).
-thin_matches: 50        # below this many prior matches = "thin": flag the alert, haircut the stake, segment CLV/calibration
-thin_kelly_haircut: 0.5  # extra Kelly-fraction multiplier on thin-player bets (uncertainty-aware sizing)
+thin_matches: 50        # below this many prior matches = "thin": ABSTAIN from alerting (thin bets were worst vs the sharp close) + segment CLV/calibration. Set == min_matches to disable.
+thin_kelly_haircut: 0.5  # (superseded — thin players now abstain; kept for a possible future re-enable)
+
+# Flat unit stake during the paper phase (CLV is stake-independent). Set a $ amount to suggest a
+# fixed stake instead of ¼-Kelly on the (unvalidated) p_model; remove/None to size by Kelly.
+paper_flat_stake: 20.0
 
 # Go-live gate (net-of-fee closing-line value; see /stats). Do NOT bet real money until it's MET.
-min_effect_size: 0.005  # net-CLV 95% CI lower bound must exceed this margin above break-even (~0.5c)
-min_clv_clusters: 30    # require >= this many independent trading-day clusters (alongside >= 200 bets)
+# The gate now clusters by ISO WEEK (day was too fine), uses a BCa bootstrap interval, and ALSO
+# requires realized net-ROI >= 0 and a low missed-capture rate — so a rosy CLV on a thin/biased
+# subsample can't green-light real money.
+min_effect_size: 0.015  # net-CLV 95% CI lower bound must exceed this (~1.5c, sized to cover slippage + round-up fee + ask-vs-mid basis)
+min_clv_clusters: 12    # require >= this many independent ISO-WEEK clusters (alongside >= 200 bets)
+max_missed_capture_rate: 0.30  # refuse go-live if more than this fraction of closing-line captures were missed
 
 # Scheduled systematic scan (Phase 6): sweep every N hours so the CLV sample isn't biased by owner
-# timing. Quiet unless an alert fires (scan_announce: true DMs every scan). Omit / None = disabled.
+# timing. Quiet unless a NEW alert is logged (scan_announce: true DMs every scan). Omit / None = off.
 scan_interval_hours: 8.0
 scan_announce: false
+
+# Daily liveness heartbeat DM (so a silent outage doesn't masquerade as "no edge"). None disables.
+heartbeat_hours: 24.0
+# Warn when total OPEN (unsettled) suggested stake exceeds this fraction of bankroll (there is no
+# per-alert cap for correlated same-day alerts). Bot never places orders; this is a heads-up only.
+max_open_exposure_pct: 0.20
 
 # v1 Elo model hyperparameters. The per-format logistic scales are fitted per tour by
 # scripts/build_ratings.py and stored in data/model.json (not set here).

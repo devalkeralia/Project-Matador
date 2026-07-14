@@ -173,6 +173,24 @@ def test_run_check_abstain_when_series_unconfigured():
     conn.close()
 
 
+def test_run_check_warns_when_open_exposure_over_cap():
+    conn = _db()
+    cfg = make_cfg(max_open_exposure_pct=0.001)  # cap = $1 -> the logged stake exceeds it
+    with make_client() as client:
+        out = run_check(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), cfg, conn, "atp", "Aaa", "Bbb")
+    assert "VALUE ALERT" in out and "Open exposure" in out and "exceeds" in out
+    conn.close()
+
+
+def test_heartbeat_text_summarizes_state():
+    import matador.bot as bot
+    conn = _db()
+    _capture_opp(conn)  # one logged opp, no closing line captured yet
+    txt = bot._heartbeat_text(conn, make_cfg())
+    assert "Matador OK" in txt and "1 opps" in txt and "1 pending" in txt
+    conn.close()
+
+
 # ---- run_scan ----
 
 def test_run_scan_alerts_tallies_and_dedups():
@@ -316,6 +334,24 @@ def test_capture_close_marks_missed_without_a_two_sided_book():
     conn.close()
 
 
+def test_capture_close_fail_closed_on_unknown_start_and_pre_escape():
+    conn = _db()
+    oid = _capture_opp(conn, occurrence=None)  # untimed (e.g. an outright final) -> can't tell pre-match from in-play
+    with make_capture_client() as client:
+        auto = capture_close(client, conn, oid, source="auto")            # auto never force-captures
+    assert not auto["ok"] and auto["reason"] == "unknown_start"           # fail-closed -> marked missed
+    row = conn.execute("SELECT closing_price, closing_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["closing_price"] is None and row["closing_source"].startswith("missed:unknown_start")
+    # a human /close ... pre overrides the refusal when they confirm it's pre-match
+    conn2 = _db()
+    oid2 = _capture_opp(conn2, occurrence=None)
+    with make_capture_client() as client:
+        forced = capture_close(client, conn2, oid2, source="manual", force_prematch=True)
+    assert forced["ok"] and forced["closing_price"] == pytest.approx(0.475)
+    conn.close()
+    conn2.close()
+
+
 def test_run_stats_after_close_and_result():
     conn = _db()
     oid = _capture_opp(conn)                    # future occurrence -> capturable now
@@ -326,7 +362,7 @@ def test_run_stats_after_close_and_result():
     assert "Paper-trading stats" in out
     assert "Trades recorded: 1" in out and "1W/0L" in out
     assert "Captures: 0 auto / 1 manual / 0 missed" in out  # /close is a manual capture
-    assert "1 bet(s) over 1 day(s)" in out and "Go-live gate" in out
+    assert "1 bet(s) over 1 week(s)" in out and "Go-live gate" in out
     conn.close()
 
 

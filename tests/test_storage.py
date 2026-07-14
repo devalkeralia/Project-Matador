@@ -3,7 +3,7 @@ import sqlite3
 import pytest
 
 from matador.storage import (
-    connect, get_opportunity, init_db, insert_opportunity, pending_captures,
+    connect, get_opportunity, init_db, insert_opportunity, open_exposure, pending_captures,
     record_outcome, recent_opportunities, settled_bets, update_occurrence,
 )
 
@@ -168,6 +168,15 @@ def test_settled_bets_joins_and_pending_captures_filters(db):
     assert rows[a]["closing_price"] == 0.56 and rows[a]["price"] == 0.50
     assert rows[b]["closing_price"] is None                       # LEFT JOIN -> NULL outcome
     assert [r["id"] for r in pending_captures(db)] == [b]         # a has a closing line; b is pending
+
+
+def test_open_exposure_sums_unsettled_only(db):
+    a = make_opportunity(db, market_ticker="T-A", suggested_stake=40.0)
+    make_opportunity(db, market_ticker="T-B", suggested_stake=30.0)
+    make_opportunity(db, market_ticker="T-C", suggested_stake=20.0)
+    assert open_exposure(db) == pytest.approx(90.0)      # all three open
+    record_outcome(db, a, result="win", pnl=5.0)         # a now settled -> drops out of open exposure
+    assert open_exposure(db) == pytest.approx(50.0)      # b + c
 
 
 def test_update_occurrence_changes_only_that_column(db):

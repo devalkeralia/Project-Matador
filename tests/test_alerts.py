@@ -188,6 +188,10 @@ def test_format_close_ok_and_fail():
     assert "missed" in format_close({"opp_id": 3, "ok": False, "reason": "no_price"})
     assert "too late" in format_close({"opp_id": 4, "ok": False, "reason": "too_late"}).lower()
     assert "isn't active" in format_close({"opp_id": 6, "ok": False, "reason": "not_active", "status": "settled"})
+    assert "too early" in format_close({"opp_id": 7, "ok": False, "reason": "too_early"}).lower()
+    sharp_only = format_close({"opp_id": 8, "ok": True, "side": "yes", "market_player": "X",
+                               "closing_price": None, "entry_price": 0.50, "sharp_close": 0.60, "sharp_source": "pinnacle"})
+    assert "Kalshi book thin" in sharp_only and "sharp pinnacle 60¢" in sharp_only
 
 
 def _summary(**o) -> dict:
@@ -195,28 +199,31 @@ def _summary(**o) -> dict:
              n_clv=0, n_clusters=0, mean_clv=None, mean_gross_clv=None, clv_ci=None,
              n_sharp=0, n_sharp_clusters=0, mean_sharp_clv=None, sharp_ci=None, sharp_coverage=0.0,
              min_sharp_coverage=0.5, sharp_sources={"pinnacle": 0, "consensus": 0},
+             n_consensus=0, mean_consensus_clv=None,
              min_effect_size=0.015, min_clusters=12, missed_rate=0.0, max_missed_rate=0.30,
-             go_live=False, buckets={}, captures={"auto": 0, "manual": 0, "missed": 0})
+             go_live=False, buckets={}, captures={"auto": 0, "manual": 0, "sharp_only": 0, "missed": 0})
     s.update(o)
     return s
 
 
 def test_format_stats_empty_and_populated():
     empty = format_stats(_summary())
-    assert "none yet" in empty and "No sharp closing lines yet" in empty
+    assert "none yet" in empty and "No pinnacle closing lines yet" in empty
     out = format_stats(_summary(n_opportunities=3, n_results=2, wins=1, hit_rate=0.5, total_pnl=12.5,
                                 staked=100.0, roi=0.125, n_clv=2, n_clusters=2, mean_clv=0.02,
                                 mean_gross_clv=0.03, clv_ci=(-0.01, 0.05),
                                 n_sharp=2, n_sharp_clusters=2, mean_sharp_clv=0.018, sharp_ci=(-0.005, 0.04),
-                                sharp_coverage=1.0, sharp_sources={"pinnacle": 2, "consensus": 0},
+                                sharp_coverage=1.0, sharp_sources={"pinnacle": 2, "consensus": 1},
+                                n_consensus=1, mean_consensus_clv=0.01,
                                 buckets={"mid(50-200)": {"n": 2, "mean_clv": 0.02}},
-                                captures={"auto": 5, "manual": 1, "missed": 2}, missed_rate=0.25))
+                                captures={"auto": 5, "manual": 1, "sharp_only": 0, "missed": 2}, missed_rate=0.25))
     assert "1W/1L" in out and "hit rate 50%" in out
-    assert "Captures: 5 auto / 1 manual / 2 missed" in out
-    assert "Mean sharp CLV +1.8% · 95% CI (BCa) [-0.5%, +4.0%]" in out       # BINDING metric is sharp CLV
-    assert "2 sharp-referenced bet(s) over 2 week(s) (2 pinnacle / 0 consensus)" in out
+    assert "Captures: 5 auto / 1 manual / 0 sharp-only / 2 missed" in out
+    assert "Mean sharp CLV +1.8% · 95% CI (BCa) [-0.5%, +4.0%]" in out       # BINDING metric = Pinnacle CLV
+    assert "2 pinnacle bet(s) over 2 week(s)" in out
+    assert "(info) consensus CLV +1.0% over 1 bet(s) — does NOT gate" in out  # consensus never gates
     assert "(info) Kalshi-close CLV +2.0% over 2 bet(s)" in out              # Kalshi demoted to informational
-    assert "not yet" in out and "2/200" in out and "2/12" in out            # sharp bets / weeks
-    assert "sharp coverage ≥ 50%  (now 100%)" in out                        # coverage co-gate shown
+    assert "not yet" in out and "2/200" in out and "2/12" in out
+    assert "pinnacle coverage ≥ 50%  (now 100%)" in out
     assert "realized net-ROI ≥ 0  (+12.5%)" in out
     assert "missed-capture rate ≤ 30%  (now 25%)" in out

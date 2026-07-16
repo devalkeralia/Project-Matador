@@ -136,3 +136,24 @@ def test_sharp_fair_for_opp_uncovered_skips_fetch():
 def test_sharp_fair_for_opp_swallows_errors():
     with _client(lambda r: httpx.Response(500, json={})) as c:
         assert sharp_fair_for_opp(c, _opp_row()) == (None, None)   # 5xx -> wrapped -> (None, None)
+
+
+def test_sharp_fair_prob_null_team_event_does_not_kill_the_board():
+    # a malformed event (null team names) must not TypeError the pair scan and lose the real event
+    events = [{"home_team": None, "away_team": None, "commence_time": "2026-08-15T10:00:00Z", "bookmakers": []}] + EV
+    p, src = sharp_fair_prob(events, "Jannik Sinner", "Alexander Zverev", "yes", None)
+    assert src == "pinnacle" and p is not None
+
+
+def test_sharp_fair_for_opp_negative_caches_fetch_failure():
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(500, json={})
+
+    with _client(handler) as c:
+        cache = {}
+        assert sharp_fair_for_opp(c, _opp_row(), cache=cache) == (None, None)
+        assert sharp_fair_for_opp(c, _opp_row(), cache=cache) == (None, None)   # served from the negative cache
+    assert calls["n"] == 1   # the failing sport_key is fetched ONCE, not re-run per row

@@ -87,6 +87,7 @@ _RECENT_MAX = 50
 _FIND_TOP_N = 5
 CAPTURE_BEFORE_START = timedelta(minutes=5)   # auto-capture this long BEFORE scheduled start (guaranteed pre-match)
 CAPTURE_LATE_GRACE = timedelta(minutes=5)     # refuse a capture more than this past scheduled start. Kalshi trades tennis IN-PLAY (market stays 'active' through the match), so status alone can't tell pre-match from in-play -- a tight grace is the only real guard against snapshotting a live price as the "close"
+CAPTURE_EARLIEST = timedelta(minutes=60)      # refuse a capture more than this BEFORE start (not a miss -- leave pending): a batch /close must not snapshot tomorrow's match as its "close", omitting the late-info drift CLV exists to measure
 RESCHEDULE_EPSILON = timedelta(minutes=2)     # ignore sub-epsilon start-time drift; a larger future shift = a postponement -> re-arm the capture
 
 
@@ -243,6 +244,14 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
     opp = get_opportunity(conn, opp_id)
     if opp is None:
         return {"opp_id": opp_id, "ok": False, "reason": "no_such_opp"}
+    # Idempotent: if a real close was already recorded (Kalshi mid OR sharp), never re-capture/overwrite
+    # (a re-fired auto job must not clobber a good sharp_close with NULL; a late re-/close must not
+    # relabel a clean row 'missed').
+    prior = storage.get_outcome(conn, opp_id)
+    if prior is not None and (prior["closing_price"] is not None or prior["sharp_close"] is not None):
+        return {"opp_id": opp_id, "ok": True, "reason": "already_captured", "side": opp["side"],
+                "market_player": opp["market_player"], "closing_price": prior["closing_price"],
+                "entry_price": opp["price"], "sharp_close": prior["sharp_close"], "sharp_source": prior["sharp_source"]}
     now = now or datetime.now(timezone.utc)
     start = _parse_dt(opp["occurrence_datetime"])
     if start is None and not force_prematch:  # can't verify pre-match -> refuse rather than poison CLV
@@ -251,19 +260,28 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
     if start is not None and now > start + CAPTURE_LATE_GRACE:
         _mark_missed(conn, opp_id, "late", source)
         return {"opp_id": opp_id, "ok": False, "reason": "too_late"}
+    if start is not None and not force_prematch and (start - now) > CAPTURE_EARLIEST:
+        return {"opp_id": opp_id, "ok": False, "reason": "too_early"}  # NOT a miss -- stays pending for a capture nearer start
     market = client.get_market(opp["market_ticker"])
     if market.status not in ("active", "open"):
         _mark_missed(conn, opp_id, market.status or "unknown", source)
         return {"opp_id": opp_id, "ok": False, "reason": "not_active", "status": market.status}
-    mid = _same_side_mid(client.best_quotes(opp["market_ticker"]), opp["side"])
-    if mid is None:
-        _mark_missed(conn, opp_id, "no_two_sided_book", source)
-        return {"opp_id": opp_id, "ok": False, "reason": "no_price"}
-    # Best-effort SHARP closing line (Pinnacle) for the taken side -- the binding go-live baseline.
-    # Never raises / never blocks the Kalshi capture; a miss just leaves sharp_close NULL.
+    # SHARP closing line (Pinnacle) for the taken side -- the binding go-live baseline. Attempt it even
+    # if the Kalshi book is thin: the gate needs only entry + sharp_close (the Kalshi mid is informational),
+    # so a one-sided Kalshi book must not censor an independently-available sharp reference. Never raises.
     sharp_close = sharp_source = None
     if sharp_client is not None:
         sharp_close, sharp_source = sharp_fair_for_opp(sharp_client, opp, cache=sharp_cache)
+    mid = _same_side_mid(client.best_quotes(opp["market_ticker"]), opp["side"])
+    if mid is None:
+        if sharp_close is None:
+            _mark_missed(conn, opp_id, "no_two_sided_book", source)
+            return {"opp_id": opp_id, "ok": False, "reason": "no_price"}
+        # Kalshi book too thin for a mid, but we have a sharp ref -> record sharp-only (row leaves pending).
+        storage.record_outcome(conn, opp_id, closing_captured_at=now.isoformat(timespec="seconds"),
+                               closing_source=f"sharp_only:{source}", sharp_close=sharp_close, sharp_source=sharp_source)
+        return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"],
+                "closing_price": None, "entry_price": opp["price"], "sharp_close": sharp_close, "sharp_source": sharp_source}
     storage.record_outcome(conn, opp_id, closing_price=mid, closing_captured_at=now.isoformat(timespec="seconds"),
                            closing_source=source, sharp_close=sharp_close, sharp_source=sharp_source)
     return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"],
@@ -376,12 +394,15 @@ def _sharp_client(cfg):
     sharp_close stays NULL -> the sharp go-live gate can never pass (no real money without a sharp ref)."""
     path = cfg.odds_api_key_path
     if not path:
+        log.info("sharp track disabled: odds_api_key_path is unset (go-live gate cannot pass without a sharp reference)")
         return None
     try:
         api_key = Path(path).read_text().strip()
-    except OSError:
+    except OSError as exc:
+        log.warning("sharp track DISABLED: cannot read odds API key at %s (%s) -- go-live gate cannot pass", path, exc)
         return None
     if not api_key:
+        log.warning("sharp track DISABLED: odds API key file %s is empty -- go-live gate cannot pass", path)
         return None
     return SharpOddsClient(api_key, base_url=cfg.odds_api_base_url, region=cfg.odds_region,
                            consensus_fallback=cfg.sharp_consensus_fallback)
@@ -650,8 +671,9 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 def _heartbeat_text(conn, cfg) -> str:
     s = summarize(settled_bets(conn), cfg)
     c = s["captures"]
-    return (f"💓 Matador OK — {s['n_opportunities']} opps, {s['n_clv']} with a close over {s['n_clusters']} week(s); "
-            f"captures {c['auto']}a/{c['manual']}m/{c['missed']}x; {len(pending_captures(conn))} pending; "
+    return (f"💓 Matador OK — {s['n_opportunities']} opps, {s['n_clv']} Kalshi-closed over {s['n_clusters']} week(s); "
+            f"captures {c['auto']}a/{c['manual']}m/{c['sharp_only']}s/{c['missed']}x; {len(pending_captures(conn))} pending; "
+            f"sharp {s['n_sharp']} pinnacle / {s['n_consensus']} consensus (coverage {s['sharp_coverage']:.0%}); "
             f"open exposure ${storage.open_exposure(conn):.0f}.")
 
 

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -287,10 +288,19 @@ def make_capture_client(status="active", yes_levels=(("0.45", "100"),), no_level
     return KalshiClient(base_url="https://x/trade-api/v2", transport=httpx.MockTransport(handler))
 
 
-def _capture_opp(conn, occurrence="2099-01-01T00:00:00Z", side="yes"):
+def _soon():
+    """A start time ~10 min out: future, but inside CAPTURE_EARLIEST (60m) so a capture proceeds now."""
+    return (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(timespec="seconds")
+
+
+_SOON = "__soon__"  # sentinel default -> _soon(); explicit None stays None (untimed); a literal date is used as-is
+
+
+def _capture_opp(conn, occurrence=_SOON, side="yes"):
+    occ = _soon() if occurrence == _SOON else occurrence
     return insert_opportunity(conn, ts="t", tour="ATP", market_ticker="M", market_player="Player Aaa",
                               side=side, price=0.50, p_model=0.6, net_edge=0.08, trigger_reason="prematch_value",
-                              occurrence_datetime=occurrence)
+                              occurrence_datetime=occ)
 
 
 def test_capture_close_records_the_same_side_mid_pre_match():
@@ -362,10 +372,11 @@ def make_sharp_client(price_a=1.5, price_b=2.6, status=200):
     return SharpOddsClient("K", transport=httpx.MockTransport(lambda r: httpx.Response(status, json=body)))
 
 
-def _capture_opp_sharp(conn, occurrence="2099-01-01T00:00:00Z"):
+def _capture_opp_sharp(conn, occurrence=_SOON):
+    occ = _soon() if occurrence == _SOON else occurrence
     return insert_opportunity(conn, ts="t", tour="ATP", event="Wimbledon Men Singles", market_ticker="M",
                               market_player="Player Aaa", opponent="Player Bbb", side="yes", price=0.50,
-                              p_model=0.6, net_edge=0.08, trigger_reason="prematch_value", occurrence_datetime=occurrence)
+                              p_model=0.6, net_edge=0.08, trigger_reason="prematch_value", occurrence_datetime=occ)
 
 
 def test_capture_close_records_sharp_close_and_source():
@@ -389,6 +400,69 @@ def test_capture_close_survives_sharp_error_keeps_kalshi_close():
     conn.close()
 
 
+def test_capture_close_too_early_stays_pending():
+    conn = _db()
+    far = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat(timespec="seconds")  # > CAPTURE_EARLIEST (60m)
+    oid = _capture_opp(conn, occurrence=far)
+    with make_capture_client() as client:
+        r = capture_close(client, conn, oid, source="manual")
+    assert not r["ok"] and r["reason"] == "too_early"
+    assert conn.execute("SELECT count(*) FROM outcomes WHERE opp_id=?", (oid,)).fetchone()[0] == 0  # NOT missed
+    assert [row["id"] for row in pending_captures(conn)] == [oid]   # still pending for a capture nearer start
+    with make_capture_client() as client:                          # 'pre' overrides the too-early refusal
+        r2 = capture_close(client, conn, oid, source="manual", force_prematch=True)
+    assert r2["ok"] and r2["closing_price"] == pytest.approx(0.475)
+    conn.close()
+
+
+def test_capture_close_already_captured_is_noop_and_preserves_sharp():
+    conn = _db()
+    oid = _capture_opp_sharp(conn)
+    with make_capture_client() as client, make_sharp_client() as sharp:
+        first = capture_close(client, conn, oid, source="manual", sharp_client=sharp)
+    good = first["sharp_close"]
+    assert first["ok"] and first["sharp_source"] == "pinnacle" and good is not None
+    # a re-fire with a FAILING sharp client must NOT overwrite the good sharp_close with NULL, nor relabel it
+    with make_capture_client() as client, make_sharp_client(status=500) as sharp:
+        again = capture_close(client, conn, oid, source="auto", sharp_client=sharp)
+    assert again["reason"] == "already_captured" and again["sharp_close"] == good
+    row = conn.execute("SELECT sharp_close, sharp_source, closing_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["sharp_close"] == good and row["sharp_source"] == "pinnacle" and row["closing_source"] == "manual"
+    conn.close()
+
+
+def test_capture_close_late_reclose_does_not_relabel_captured_row():
+    conn = _db()
+    oid = _capture_opp(conn)                        # near-future -> captures now
+    with make_capture_client() as client:
+        capture_close(client, conn, oid, source="auto")
+    with make_capture_client() as client:           # a later /close must not mark the clean row missed
+        r = capture_close(client, conn, oid, source="manual")
+    assert r["ok"] and r["reason"] == "already_captured"
+    assert conn.execute("SELECT closing_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()[0] == "auto"
+    conn.close()
+
+
+def test_capture_close_sharp_only_when_kalshi_book_thin():
+    conn = _db()
+    oid = _capture_opp_sharp(conn)
+    with make_capture_client(no_levels=()) as client, make_sharp_client() as sharp:  # one-sided Kalshi book -> no mid
+        r = capture_close(client, conn, oid, source="auto", sharp_client=sharp)
+    assert r["ok"] and r["closing_price"] is None and r["sharp_source"] == "pinnacle"
+    row = conn.execute("SELECT closing_price, sharp_close, closing_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["closing_price"] is None and row["sharp_close"] is not None and row["closing_source"] == "sharp_only:auto"
+    conn.close()
+
+
+def test_heartbeat_text_includes_sharp_line():
+    import matador.bot as bot
+    conn = _db()
+    _capture_opp(conn)
+    txt = bot._heartbeat_text(conn, make_cfg())
+    assert "sharp 0 pinnacle / 0 consensus" in txt and "coverage 0%" in txt
+    conn.close()
+
+
 def test_run_stats_after_close_and_result():
     conn = _db()
     oid = _capture_opp(conn)                    # future occurrence -> capturable now
@@ -398,9 +472,9 @@ def test_run_stats_after_close_and_result():
     out = run_stats(conn, make_cfg())
     assert "Paper-trading stats" in out
     assert "Trades recorded: 1" in out and "1W/0L" in out
-    assert "Captures: 0 auto / 1 manual / 0 missed" in out  # /close is a manual capture
+    assert "Captures: 0 auto / 1 manual / 0 sharp-only / 0 missed" in out  # /close is a manual capture
     # no sharp client in this test -> sharp track empty; Kalshi CLV shown as informational
-    assert "No sharp closing lines yet" in out and "Go-live gate" not in out
+    assert "No pinnacle closing lines yet" in out and "Go-live gate" not in out
     assert "(info) Kalshi-close CLV" in out and "over 1 bet(s) / 1 week(s)" in out
     conn.close()
 
@@ -474,8 +548,9 @@ def test_auto_capture_reschedules_on_postponement():
 
 def test_auto_capture_captures_when_time_unchanged():
     conn = _db()
-    oid = _capture_opp(conn, occurrence="2099-01-01T00:00:00Z")
-    with make_reconcile_client(occurrence="2099-01-01T00:00:00Z") as client:  # same start (within epsilon)
+    soon = _soon()                                       # near-future: unchanged AND inside the capture window
+    oid = _capture_opp(conn, occurrence=soon)
+    with make_reconcile_client(occurrence=soon) as client:  # same start (within epsilon)
         res = auto_capture(client, conn, oid)
     assert res["action"] == "captured" and res["result"]["ok"]
     assert res["result"]["closing_price"] == pytest.approx(0.475)         # mid of the same-side book

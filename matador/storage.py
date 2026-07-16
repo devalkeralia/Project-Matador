@@ -170,6 +170,12 @@ def get_opportunity(conn: sqlite3.Connection, opp_id: int) -> sqlite3.Row | None
     return conn.execute("SELECT * FROM opportunities WHERE id = ?", (opp_id,)).fetchone()
 
 
+def get_outcome(conn: sqlite3.Connection, opp_id: int) -> sqlite3.Row | None:
+    """The outcome row for an opportunity, or None if none recorded yet -- lets capture_close tell an
+    already-captured row from a fresh one (idempotent capture)."""
+    return conn.execute("SELECT * FROM outcomes WHERE opp_id = ?", (opp_id,)).fetchone()
+
+
 def recent_opportunities(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM opportunities ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 

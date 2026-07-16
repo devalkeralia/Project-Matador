@@ -207,15 +207,19 @@ def format_close(r: dict) -> str:
             "no_such_opp": f"No opportunity #{r['opp_id']}.",
             "no_price": f"Couldn't read a two-sided price for opp #{r['opp_id']} — marked missed (excluded from CLV).",
             "too_late": f"Opp #{r['opp_id']} is past its scheduled start — too late for a clean pre-match close; marked missed.",
+            "too_early": f"Opp #{r['opp_id']}'s match is more than an hour away — too early for a closing snapshot; still pending.",
             "not_active": f"Opp #{r['opp_id']}'s market isn't active ({r.get('status')}) — marked missed (excluded from CLV).",
             "unknown_start": f"Opp #{r['opp_id']} has no scheduled start, so I can't tell pre-match from in-play — "
                              f"marked missed. If you're sure it hasn't started, re-run: /close {r['opp_id']} pre",
         }.get(r["reason"], f"Close failed for opp #{r['opp_id']}: {r['reason']}")
-    delta_cents = (r["closing_price"] - r["entry_price"]) * 100
-    line = (
-        f"📌 Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} @ "
-        f"{_cents(r['closing_price'])} (entry {_cents(r['entry_price'])} → CLV {delta_cents:+.0f}¢)"
-    )
+    prefix = "📌 (already captured) " if r.get("reason") == "already_captured" else "📌 "
+    cp = r.get("closing_price")
+    if cp is not None:
+        delta_cents = (cp - r["entry_price"]) * 100
+        line = (f"{prefix}Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} @ "
+                f"{_cents(cp)} (entry {_cents(r['entry_price'])} → CLV {delta_cents:+.0f}¢)")
+    else:  # sharp-only capture (Kalshi book too thin for a mid)
+        line = f"{prefix}Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} — Kalshi book thin (no mid)"
     if r.get("sharp_close") is not None:  # the sharp (Pinnacle) reference -- the binding go-live basis
         sharp_edge = (r["sharp_close"] - r["entry_price"]) * 100
         line += f"  · sharp {r.get('sharp_source')} {_cents(r['sharp_close'])} (edge {sharp_edge:+.0f}¢)"
@@ -233,13 +237,11 @@ def format_stats(s: dict) -> str:
     else:
         lines.append("Trades recorded: none yet (use /result)")
     c = s["captures"]
-    lines.append(f"Captures: {c['auto']} auto / {c['manual']} manual / {c['missed']} missed")
-    lines += ["", "Closing-line value vs the SHARP close — the go-live metric (NET of fees):"]
+    lines.append(f"Captures: {c['auto']} auto / {c['manual']} manual / {c['sharp_only']} sharp-only / {c['missed']} missed")
+    lines += ["", "Closing-line value vs the PINNACLE close — the go-live metric (NET of fees):"]
     if s["n_sharp"]:
         lo, hi = s["sharp_ci"]
-        srcs = s["sharp_sources"]
-        lines.append(f"  {s['n_sharp']} sharp-referenced bet(s) over {s['n_sharp_clusters']} week(s) "
-                     f"({srcs['pinnacle']} pinnacle / {srcs['consensus']} consensus)")
+        lines.append(f"  {s['n_sharp']} pinnacle bet(s) over {s['n_sharp_clusters']} week(s)")
         lines.append(f"  Mean sharp CLV {s['mean_sharp_clv']:+.1%} · 95% CI (BCa) [{lo:+.1%}, {hi:+.1%}]")
         if s["go_live"]:
             lines.append("  Go-live gate: ✅ MET")
@@ -248,13 +250,15 @@ def format_stats(s: dict) -> str:
             roi_str = f"{roi:+.1%}" if roi is not None else "n/a"
             lines.append("  Go-live gate: not yet — needs ALL of:")   # every co-gate AND-ed
             lines.append(f"    · sharp-CLV CI lower bound > {s['min_effect_size']:+.1%}  (now {lo:+.1%})")
-            lines.append(f"    · ≥ {MIN_BETS} sharp bets  ({s['n_sharp']}/{MIN_BETS})")
+            lines.append(f"    · ≥ {MIN_BETS} pinnacle bets  ({s['n_sharp']}/{MIN_BETS})")
             lines.append(f"    · ≥ {s['min_clusters']} weeks  ({s['n_sharp_clusters']}/{s['min_clusters']})")
-            lines.append(f"    · sharp coverage ≥ {s['min_sharp_coverage']:.0%}  (now {s['sharp_coverage']:.0%})")
+            lines.append(f"    · pinnacle coverage ≥ {s['min_sharp_coverage']:.0%}  (now {s['sharp_coverage']:.0%})")
             lines.append(f"    · realized net-ROI ≥ 0  ({roi_str})")
             lines.append(f"    · missed-capture rate ≤ {s['max_missed_rate']:.0%}  (now {s['missed_rate']:.0%})")
     else:
-        lines.append("  No sharp closing lines yet — the gate needs a sharp reference (see /notes).")
+        lines.append("  No pinnacle closing lines yet — the gate needs a sharp reference (see /notes).")
+    if s.get("n_consensus"):  # soft-book median: informational, never gates
+        lines.append(f"  (info) consensus CLV {s['mean_consensus_clv']:+.1%} over {s['n_consensus']} bet(s) — does NOT gate")
     # Kalshi-own-close CLV is circular, so it's informational only from here.
     if s["n_clv"]:
         lo2, hi2 = s["clv_ci"]

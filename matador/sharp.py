@@ -157,8 +157,8 @@ def sharp_fair_prob(events, market_player, opponent, side, occurrence_datetime, 
     if len(want) != 2:
         return None, None  # the pair collapses to one key -> can't disambiguate
     cands = [e for e in events
-             if {surname_key(canonical_key(e.get("home_team", ""))),
-                 surname_key(canonical_key(e.get("away_team", "")))} == want]
+             if {surname_key(canonical_key(e.get("home_team") or "")),   # `or ""` -> a JSON-null team can't TypeError the scan
+                 surname_key(canonical_key(e.get("away_team") or ""))} == want]
     if not cands:
         return None, None
     if len(cands) > 1:  # essentially never for a full-pair match; tiebreak on nearest start
@@ -206,7 +206,12 @@ def sharp_fair_for_opp(client, opp, *, cache=None):
         if cache is not None and key in cache:
             events = cache[key]
         else:
-            events = client.fetch_h2h(key)
+            try:
+                events = client.fetch_h2h(key)
+            except Exception:
+                if cache is not None:
+                    cache[key] = []  # negative-cache: a failing sport_key must not re-run the retry ladder per row
+                raise
             if cache is not None:
                 cache[key] = events
         return sharp_fair_prob(events, opp["market_player"], opponent, opp["side"],

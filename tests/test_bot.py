@@ -24,6 +24,7 @@ from matador.bot import (
 from matador.config import Config
 from matador.kalshi.client import KalshiClient
 from matador.model.probability import WinProbability
+from matador.sharp import SharpOddsClient
 from matador.storage import connect, init_db, insert_opportunity, pending_captures, recent_opportunities
 
 
@@ -352,6 +353,42 @@ def test_capture_close_fail_closed_on_unknown_start_and_pre_escape():
     conn2.close()
 
 
+def make_sharp_client(price_a=1.5, price_b=2.6, status=200):
+    """Mock the-odds-api returning a Wimbledon Player Aaa vs Player Bbb h2h with a pinnacle price."""
+    ev = [{"home_team": "Player Aaa", "away_team": "Player Bbb", "commence_time": "2099-01-01T00:00:00Z",
+           "bookmakers": [{"key": "pinnacle", "markets": [{"key": "h2h", "outcomes": [
+               {"name": "Player Aaa", "price": price_a}, {"name": "Player Bbb", "price": price_b}]}]}]}]
+    body = ev if status == 200 else {}
+    return SharpOddsClient("K", transport=httpx.MockTransport(lambda r: httpx.Response(status, json=body)))
+
+
+def _capture_opp_sharp(conn, occurrence="2099-01-01T00:00:00Z"):
+    return insert_opportunity(conn, ts="t", tour="ATP", event="Wimbledon Men Singles", market_ticker="M",
+                              market_player="Player Aaa", opponent="Player Bbb", side="yes", price=0.50,
+                              p_model=0.6, net_edge=0.08, trigger_reason="prematch_value", occurrence_datetime=occurrence)
+
+
+def test_capture_close_records_sharp_close_and_source():
+    conn = _db()
+    oid = _capture_opp_sharp(conn)
+    with make_capture_client() as client, make_sharp_client() as sharp:
+        r = capture_close(client, conn, oid, source="auto", sharp_client=sharp)
+    assert r["ok"] and r["sharp_source"] == "pinnacle" and r["sharp_close"] is not None
+    row = conn.execute("SELECT closing_price, sharp_close, sharp_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["closing_price"] == pytest.approx(0.475) and row["sharp_close"] is not None and row["sharp_source"] == "pinnacle"
+    conn.close()
+
+
+def test_capture_close_survives_sharp_error_keeps_kalshi_close():
+    conn = _db()
+    oid = _capture_opp_sharp(conn)
+    with make_capture_client() as client, make_sharp_client(status=500) as sharp:  # sharp API 500s
+        r = capture_close(client, conn, oid, source="auto", sharp_client=sharp)
+    assert r["ok"] and r["closing_price"] == pytest.approx(0.475)   # Kalshi close still captured
+    assert r["sharp_close"] is None                                 # sharp failed -> NULL, no crash / no missed
+    conn.close()
+
+
 def test_run_stats_after_close_and_result():
     conn = _db()
     oid = _capture_opp(conn)                    # future occurrence -> capturable now
@@ -362,7 +399,9 @@ def test_run_stats_after_close_and_result():
     assert "Paper-trading stats" in out
     assert "Trades recorded: 1" in out and "1W/0L" in out
     assert "Captures: 0 auto / 1 manual / 0 missed" in out  # /close is a manual capture
-    assert "1 bet(s) over 1 week(s)" in out and "Go-live gate" in out
+    # no sharp client in this test -> sharp track empty; Kalshi CLV shown as informational
+    assert "No sharp closing lines yet" in out and "Go-live gate" not in out
+    assert "(info) Kalshi-close CLV" in out and "over 1 bet(s) / 1 week(s)" in out
     conn.close()
 
 

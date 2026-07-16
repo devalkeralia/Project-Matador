@@ -32,6 +32,7 @@ class Opportunity:
     market_ticker: str
     event_ticker: str
     market_player: str                 # yes_sub_title: the player the market's Yes contract pays out on
+    opponent: str | None               # the other player's full name (for the sharp-line pair match at close)
     side: str
     price: float
     p_model: float
@@ -170,6 +171,7 @@ def evaluate_resolution(
         market_ticker=resolution.market_ticker,
         event_ticker=resolution.event_ticker,
         market_player=resolution.yes_sub_title,
+        opponent=resolution.opponent,
         side=edge.side,
         price=edge.price,
         p_model=round(edge.p, 4),
@@ -350,7 +352,7 @@ def log_opportunity(conn, opp: Opportunity, *, force: bool = False) -> int | Non
         conn,
         ts=opp.ts, tour=opp.tour, event=opp.event, match=opp.match,
         market_ticker=opp.market_ticker, event_ticker=opp.event_ticker, market_player=opp.market_player,
-        side=opp.side, price=opp.price,
+        opponent=opp.opponent, side=opp.side, price=opp.price,
         p_model=opp.p_model, net_edge=opp.net_edge, suggested_stake=opp.suggested_stake,
         contracts=opp.contracts, liquidity=opp.liquidity, trigger_reason=opp.trigger_reason,
         occurrence_datetime=opp.occurrence_datetime, flagged=int(opp.flagged), experience=opp.experience,

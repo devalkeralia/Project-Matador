@@ -137,9 +137,10 @@ def test_init_db_migrates_missing_columns_idempotently():
     )
     conn.execute("INSERT INTO outcomes (opp_id, closing_price) VALUES (1, 0.5)")
     init_db(conn)  # should ALTER-add the missing columns
-    assert {"closing_captured_at", "closing_source"} <= {r["name"] for r in conn.execute("PRAGMA table_info(outcomes)")}
+    out_cols = {r["name"] for r in conn.execute("PRAGMA table_info(outcomes)")}
+    assert {"closing_captured_at", "closing_source", "sharp_close", "sharp_source"} <= out_cols
     opp_cols = {r["name"] for r in conn.execute("PRAGMA table_info(opportunities)")}
-    assert {"market_player", "event_ticker", "occurrence_datetime", "flagged", "experience"} <= opp_cols  # full set
+    assert {"market_player", "event_ticker", "occurrence_datetime", "flagged", "experience", "opponent"} <= opp_cols
     assert conn.execute("SELECT closing_price FROM outcomes WHERE opp_id=1").fetchone()[0] == 0.5  # data preserved
     init_db(conn)  # idempotent -- re-running must not error
     conn.close()

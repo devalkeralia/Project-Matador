@@ -17,8 +17,10 @@ import asyncio
 import logging
 import re
 from collections import Counter
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from itertools import chain
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, filters
@@ -31,6 +33,7 @@ from matador.alerts import (
 from matador.clv import net_pnl, summarize
 from matador.engine import evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series
 from matador.kalshi.client import KalshiClient
+from matador.sharp import SharpOddsClient, sharp_fair_for_opp
 from matador.storage import get_opportunity, last_opportunity, pending_captures, recent_opportunities, settled_bets
 
 log = logging.getLogger(__name__)
@@ -229,7 +232,7 @@ def _mark_missed(conn, opp_id: int, reason: str, source: str) -> None:
 
 
 def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | None = None,
-                  force_prematch: bool = False) -> dict:
+                  force_prematch: bool = False, sharp_client=None, sharp_cache=None) -> dict:
     """Snapshot the CLOSING LINE (same-side MID) for a logged opportunity -- the PRE-match price.
     Read-only against Kalshi + a paper log write; shared by /close and the auto-job. FAIL-CLOSED:
     refuses (marks 'missed', never fabricates) when the market is not active, we're materially past
@@ -256,12 +259,18 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
     if mid is None:
         _mark_missed(conn, opp_id, "no_two_sided_book", source)
         return {"opp_id": opp_id, "ok": False, "reason": "no_price"}
-    storage.record_outcome(conn, opp_id, closing_price=mid, closing_captured_at=now.isoformat(timespec="seconds"), closing_source=source)
+    # Best-effort SHARP closing line (Pinnacle) for the taken side -- the binding go-live baseline.
+    # Never raises / never blocks the Kalshi capture; a miss just leaves sharp_close NULL.
+    sharp_close = sharp_source = None
+    if sharp_client is not None:
+        sharp_close, sharp_source = sharp_fair_for_opp(sharp_client, opp, cache=sharp_cache)
+    storage.record_outcome(conn, opp_id, closing_price=mid, closing_captured_at=now.isoformat(timespec="seconds"),
+                           closing_source=source, sharp_close=sharp_close, sharp_source=sharp_source)
     return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"],
-            "closing_price": mid, "entry_price": opp["price"]}
+            "closing_price": mid, "entry_price": opp["price"], "sharp_close": sharp_close, "sharp_source": sharp_source}
 
 
-def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None) -> dict:
+def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None, sharp_client=None) -> dict:
     """Scheduled-capture arbiter: the LIVE Kalshi market is the single source of truth for the
     match start. When it differs materially from the stored time (a reschedule in EITHER direction),
     correct the stored time first, then:
@@ -288,7 +297,8 @@ def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None) -> d
             storage.update_occurrence(conn, opp_id, market.occurrence_datetime)  # correct EITHER direction
             if live > now:  # still snapshot-able pre-match -> re-arm for the new start, don't capture now
                 return {"action": "rescheduled", "opp_id": opp_id, "new_start": market.occurrence_datetime}
-    return {"action": "captured", "result": capture_close(client, conn, opp_id, source="auto", now=now)}
+    return {"action": "captured",
+            "result": capture_close(client, conn, opp_id, source="auto", now=now, sharp_client=sharp_client)}
 
 
 def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int | None, cfg) -> str:
@@ -306,15 +316,18 @@ def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int
     return format_result(opp, result, fill_price, contracts, pnl)
 
 
-def run_close(client, conn, opp_id: int | None = None, *, force_prematch: bool = False) -> str:
+def run_close(client, conn, opp_id: int | None = None, *, force_prematch: bool = False, sharp_client=None) -> str:
     """Capture the closing line for one opp, or (no id) every opportunity still missing one.
     `force_prematch` (from `/close <id> pre`) lets the owner confirm an untimed market is pre-match."""
     if opp_id is not None:
-        return format_close(capture_close(client, conn, opp_id, source="manual", force_prematch=force_prematch))
+        return format_close(capture_close(client, conn, opp_id, source="manual",
+                                          force_prematch=force_prematch, sharp_client=sharp_client))
     pend = pending_captures(conn)
     if not pend:
         return "Nothing to close — every logged opportunity already has a closing line."
-    results = [capture_close(client, conn, r["id"], source="manual") for r in pend]  # batch never force-captures
+    cache: dict = {}  # memo the sharp board per tournament across the batch (one fetch per sport_key)
+    results = [capture_close(client, conn, r["id"], source="manual",  # batch never force-captures
+                             sharp_client=sharp_client, sharp_cache=cache) for r in pend]
     return f"Captured {sum(r['ok'] for r in results)}/{len(results)} closing lines:\n" + "\n".join(
         format_close(r) for r in results)
 
@@ -356,6 +369,22 @@ def parse_result_args(text: str) -> tuple[int, str, float | None, int | None] | 
 
 def _client(cfg, demo: bool) -> KalshiClient:
     return KalshiClient(base_url=cfg.kalshi_base_url if demo else PROD_BASE)  # no signer -- reads are public
+
+
+def _sharp_client(cfg):
+    """A SharpOddsClient (the-odds-api) if a non-empty key file is configured, else None. When None,
+    sharp_close stays NULL -> the sharp go-live gate can never pass (no real money without a sharp ref)."""
+    path = cfg.odds_api_key_path
+    if not path:
+        return None
+    try:
+        api_key = Path(path).read_text().strip()
+    except OSError:
+        return None
+    if not api_key:
+        return None
+    return SharpOddsClient(api_key, base_url=cfg.odds_api_base_url, region=cfg.odds_region,
+                           consensus_fallback=cfg.sharp_consensus_fallback)
 
 
 def _with_conn(cfg, fn):
@@ -404,15 +433,15 @@ def _result_job(cfg, opp_id, result, fill_price, contracts) -> str:
 
 
 def _close_job(cfg, demo, opp_id, force_prematch=False) -> str:
-    with _client(cfg, demo) as client:
-        return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id, force_prematch=force_prematch))
+    with _client(cfg, demo) as client, (_sharp_client(cfg) or nullcontext()) as sharp:
+        return _with_conn(cfg, lambda conn: run_close(client, conn, opp_id, force_prematch=force_prematch, sharp_client=sharp))
 
 
 def _auto_capture_job(cfg, demo, opp_id) -> dict:
     """The scheduled (auto) capture path: reconcile against the live market (postpone-aware), then
-    capture-or-miss. Returns auto_capture's action dict for capture_job to act on."""
-    with _client(cfg, demo) as client:
-        return _with_conn(cfg, lambda conn: auto_capture(client, conn, opp_id))
+    capture-or-miss (with the sharp closing line). Returns auto_capture's action dict for capture_job."""
+    with _client(cfg, demo) as client, (_sharp_client(cfg) or nullcontext()) as sharp:
+        return _with_conn(cfg, lambda conn: auto_capture(client, conn, opp_id, sharp_client=sharp))
 
 
 def _stats_job(cfg) -> str:

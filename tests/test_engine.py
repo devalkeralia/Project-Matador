@@ -147,7 +147,7 @@ def _opp(**overrides) -> Opportunity:
     fields = dict(
         ts="2026-07-04T12:00:00+00:00", tour="ATP", event="Wimbledon Men Singles", match="Aaa vs Bbb",
         market_ticker="KXATPMATCH-26JUL04AB-A", event_ticker="KXATPMATCH-26JUL04AB",
-        market_player="Player Aaa", side="yes", price=0.50,
+        market_player="Player Aaa", opponent="Player Bbb", side="yes", price=0.50,
         p_model=0.60, net_edge=0.08, suggested_stake=40.0, contracts=80, liquidity=50.0,
         trigger_reason="prematch_value", occurrence_datetime="2026-07-04T13:00:00Z", flagged=False,
         experience=100, score_state=None,
@@ -176,6 +176,7 @@ def test_stored_opportunity_carries_clv_fields():
     row = get_opportunity(conn, 1)
     assert row["event_ticker"] == "KXATPMATCH-26JUL04AB"
     assert row["market_player"] == "Player Aaa"
+    assert row["opponent"] == "Player Bbb"       # persisted for the sharp-line pair match at close
     assert row["occurrence_datetime"] == "2026-07-04T13:00:00Z"
     assert row["flagged"] == 1
     conn.close()

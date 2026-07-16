@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     market_ticker TEXT NOT NULL,
     event_ticker TEXT,
     market_player TEXT,         -- yes_sub_title: the player the Yes contract pays out on (self-describing alert log)
+    opponent TEXT,              -- the other player's full name (for the sharp-line pair match at close capture)
     side TEXT NOT NULL CHECK (side IN ('yes', 'no')),
     price REAL NOT NULL,
     p_model REAL NOT NULL,
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     closing_price REAL,            -- same-side market price at scheduled match start (the CLV baseline)
     closing_captured_at TEXT,      -- when the closing line was snapshotted (ISO)
     closing_source TEXT,           -- how it was captured: 'manual' (/close) or 'auto' (scheduled)
+    sharp_close REAL,              -- Shin-devigged sharp (Pinnacle) fair prob of the TAKEN side at close -- the sharp go-live gate's baseline
+    sharp_source TEXT,             -- 'pinnacle' | 'consensus' (which sharp reference produced sharp_close)
     result TEXT CHECK (result IS NULL OR result IN ('win', 'loss', 'void')),  -- 'void' = walkover/refund (excluded from CLV, hit-rate, P&L)
     pnl REAL,
     clv REAL
@@ -49,6 +52,7 @@ _OPPORTUNITY_COLUMNS = (
     "market_ticker",
     "event_ticker",
     "market_player",
+    "opponent",
     "side",
     "price",
     "p_model",
@@ -65,16 +69,19 @@ _OPPORTUNITY_COLUMNS = (
 
 _OUTCOME_COLUMNS = (
     "fill_price", "contracts_filled", "closing_price", "closing_captured_at", "closing_source",
-    "result", "pnl", "clv",
+    "sharp_close", "sharp_source", "result", "pnl", "clv",
 )
 
 # Columns added after the first schema shipped -- ALTER them onto pre-existing DBs (see _ensure_columns).
 _MIGRATIONS = {
     "opportunities": {
         "event_ticker": "TEXT", "market_player": "TEXT", "occurrence_datetime": "TEXT",
-        "flagged": "INTEGER DEFAULT 0", "experience": "INTEGER",
+        "flagged": "INTEGER DEFAULT 0", "experience": "INTEGER", "opponent": "TEXT",
     },
-    "outcomes": {"closing_captured_at": "TEXT", "closing_source": "TEXT"},
+    "outcomes": {
+        "closing_captured_at": "TEXT", "closing_source": "TEXT",
+        "sharp_close": "REAL", "sharp_source": "TEXT",
+    },
 }
 
 
@@ -182,7 +189,7 @@ def settled_bets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     closing_price, P&L/hit-rate need a result)."""
     return conn.execute(
         "SELECT o.*, oc.fill_price, oc.closing_price, oc.closing_captured_at, oc.closing_source, "
-        "       oc.result, oc.contracts_filled, oc.pnl, oc.clv "
+        "       oc.sharp_close, oc.sharp_source, oc.result, oc.contracts_filled, oc.pnl, oc.clv "
         "FROM opportunities o LEFT JOIN outcomes oc ON oc.opp_id = o.id ORDER BY o.id"
     ).fetchall()
 

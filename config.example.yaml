@@ -35,6 +35,16 @@ min_effect_size: 0.015  # net-CLV 95% CI lower bound must exceed this (~1.5c, si
 min_clv_clusters: 12    # require >= this many independent ISO-WEEK clusters (alongside >= 200 bets)
 max_missed_capture_rate: 0.30  # refuse go-live if more than this fraction of closing-line captures were missed
 
+# Sharp-line reference (the-odds-api -> Pinnacle). The BINDING go-live gate is "did our entry beat
+# the sharp CLOSING line?" — CLV vs Kalshi's own close can't tell a soft line from model error.
+# The API key goes in secrets/odds_api_key.txt (gitignored); set the path to None to disable the
+# sharp track (then go-live can never pass — no real money without a sharp reference).
+odds_api_key_path: secrets/odds_api_key.txt
+odds_api_base_url: https://api.the-odds-api.com/v4
+odds_region: eu                 # Pinnacle is listed under the EU region
+sharp_consensus_fallback: true  # if Pinnacle isn't quoting a covered match, use the median of the other EU books
+min_sharp_coverage: 0.5         # go-live gate: require >= this fraction of closed bets to have a sharp reference
+
 # Scheduled systematic scan (Phase 6): sweep every N hours so the CLV sample isn't biased by owner
 # timing. Quiet unless a NEW alert is logged (scan_announce: true DMs every scan). Omit / None = off.
 scan_interval_hours: 8.0

@@ -78,6 +78,12 @@ class Config(BaseModel):
     scan_announce: bool = False      # DM the owner on every scheduled scan; default only DMs when an alert fires (avoids ping fatigue)
     heartbeat_hours: float | None = 24.0  # daily liveness DM (scans/pending/missed/exposure) so a silent outage is visible; None disables
     max_open_exposure_pct: float = 0.20  # warn when total open (unsettled) suggested stake exceeds this fraction of bankroll (correlated same-day alerts have no per-alert cap)
+    # Sharp-line reference (the-odds-api -> Pinnacle) -- the binding go-live gate is "beat the sharp CLOSE".
+    odds_api_key_path: str | None = "secrets/odds_api_key.txt"  # None (or a missing/empty file) disables the sharp track -> go-live can't pass (no real money without a sharp reference)
+    odds_api_base_url: str = "https://api.the-odds-api.com/v4"
+    odds_region: str = "eu"                 # Pinnacle is listed under the EU region
+    sharp_consensus_fallback: bool = True   # when Pinnacle isn't quoting a covered match, use the median of the other EU books (tagged sharp_source='consensus') rather than starve the sample
+    min_sharp_coverage: float = 0.5         # go-live gate: require this fraction of closed bets to have a sharp reference (else the sample is biased toward efficient big matches)
     tours: list[str] = Field(default_factory=lambda: ["ATP", "WTA"])
     series: SeriesConfig = Field(default_factory=SeriesConfig)
     elo: EloConfig = Field(default_factory=EloConfig)
@@ -107,11 +113,11 @@ class Config(BaseModel):
             raise ValueError("must be >= 0")
         return v
 
-    @field_validator("max_missed_capture_rate")
+    @field_validator("max_missed_capture_rate", "min_sharp_coverage")
     @classmethod
     def _rate_range(cls, v: float) -> float:
         if not (0 <= v <= 1):
-            raise ValueError("max_missed_capture_rate must be in [0, 1]")
+            raise ValueError("must be in [0, 1]")
         return v
 
     @field_validator("max_price")

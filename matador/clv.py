@@ -109,37 +109,48 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
     (vs Kalshi's own close -- INFORMATIONAL; vs the SHARP Pinnacle close -- the BINDING gate metric,
     since Kalshi-own-close CLV is circular), per-experience segmentation, and the go-live flag. CLV
     uses the objective logged alert price as entry; P&L uses the recorded fill. 'void' rows excluded.
-    Go-live requires ALL of: SHARP-CLV BCa CI lower bound > min_effect_size, >= 200 sharp-referenced
-    bets, enough sharp week-clusters, sharp_coverage >= min_sharp_coverage, realized net-ROI >= 0,
-    and a missed-capture rate within max_missed_capture_rate."""
+    The gate binds on PINNACLE-referenced rows only (a soft-book 'consensus' ref is reported but never
+    gates); go-live requires ALL of: sharp-CLV BCa CI lower bound > min_effect_size, >= 200 pinnacle
+    bets, enough week-clusters, sharp_coverage (pinnacle / any-closed) >= min_sharp_coverage, realized
+    net-ROI >= 0, and a missed-capture rate within max_missed_capture_rate."""
     fee = cfg.fee_coefficient
-    rows = []  # (net_clv, gross_clv, week, experience) per Kalshi-CLV-eligible bet
-    sharp_rows = []  # (sharp_net_clv, week) per bet that got a sharp closing reference
+    rows = []            # (net_clv, gross_clv, week, experience) per Kalshi-CLV-eligible bet
+    pinnacle_rows = []   # (sharp_net_clv, week) per bet with a PINNACLE ref -- the BINDING gate track
+    consensus_rows = []  # ... with a consensus (soft-book median) ref -- INFORMATIONAL only
     sharp_sources = {"pinnacle": 0, "consensus": 0}
+    n_closed = 0         # non-void bets that got ANY captured close (Kalshi mid or sharp) -- coverage denominator
     total_pnl = staked = 0.0
     wins = results = 0
-    captures = {"auto": 0, "manual": 0, "missed": 0}  # closing-line capture health (data quality)
+    captures = {"auto": 0, "manual": 0, "sharp_only": 0, "missed": 0}  # closing-line capture health
     for b in bets:
-        src = b["closing_source"]  # None (not attempted) | 'auto' | 'manual' | 'missed:<reason>[<src>]'
+        src = b["closing_source"]  # None | 'auto'|'manual' | 'sharp_only:<src>' | 'missed:<reason>[<src>]'
         if src is not None:        # count capture attempts regardless of void/result (measures the mechanism)
-            bucket = "missed" if src.startswith("missed") else src
+            bucket = "missed" if src.startswith("missed") else ("sharp_only" if src.startswith("sharp_only") else src)
             if bucket in captures:
                 captures[bucket] += 1
         res = b["result"]
         if res == "void":
             continue  # walkover/refund -- excluded from every metric
         entry = b["price"]
+        has_close = False
         if b["closing_price"] is not None and entry is not None:
             gross = clv(entry, b["closing_price"])
             net = gross - fee * entry * (1.0 - entry)  # per-contract entry-fee drag, same price units
-            week = _iso_week(b["occurrence_datetime"] or b["ts"])
-            rows.append((net, gross, week, b["experience"]))
+            rows.append((net, gross, _iso_week(b["occurrence_datetime"] or b["ts"]), b["experience"]))
+            has_close = True
         if b["sharp_close"] is not None and entry is not None:
-            # SHARP CLV: entry vs the Shin-devigged sharp CLOSE, net of the entry fee (same basis as the Kalshi track).
+            # SHARP CLV: entry vs the Shin-devigged sharp CLOSE, net of the entry fee (same basis as Kalshi).
             sharp_net = (b["sharp_close"] - entry) - fee * entry * (1.0 - entry)
-            sharp_rows.append((sharp_net, _iso_week(b["occurrence_datetime"] or b["ts"])))
+            wk = _iso_week(b["occurrence_datetime"] or b["ts"])
+            if b["sharp_source"] == "pinnacle":
+                pinnacle_rows.append((sharp_net, wk))
+            elif b["sharp_source"] == "consensus":
+                consensus_rows.append((sharp_net, wk))
             if b["sharp_source"] in sharp_sources:
                 sharp_sources[b["sharp_source"]] += 1
+            has_close = True
+        if has_close:
+            n_closed += 1
         if res in ("win", "loss"):
             results += 1
             wins += 1 if res == "win" else 0
@@ -151,21 +162,23 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
     weeks = [r[2] for r in rows]
     n_clusters = len(set(weeks))
     ci = bootstrap_mean_ci(net_clvs, weeks, seed=seed) if net_clvs else None   # Kalshi-close CLV -- INFORMATIONAL
-    # SHARP track -- the BINDING go-live metric (Kalshi-own-close CLV can't tell soft-line from model error).
-    sharp_net_clvs = [r[0] for r in sharp_rows]
-    sharp_weeks = [r[1] for r in sharp_rows]
-    n_sharp = len(sharp_net_clvs)
-    n_sharp_clusters = len(set(sharp_weeks))
-    sharp_ci = bootstrap_mean_ci(sharp_net_clvs, sharp_weeks, seed=seed) if sharp_net_clvs else None
-    sharp_coverage = (n_sharp / len(net_clvs)) if net_clvs else 0.0
+    # BINDING go-live track = PINNACLE only (a soft-book consensus is NOT a sharp line, so it can't
+    # authorize real money; consensus is reported informationally). Kalshi-own-close CLV is informational too.
+    pin_clvs = [r[0] for r in pinnacle_rows]
+    pin_weeks = [r[1] for r in pinnacle_rows]
+    n_sharp = len(pin_clvs)
+    n_sharp_clusters = len(set(pin_weeks))
+    sharp_ci = bootstrap_mean_ci(pin_clvs, pin_weeks, seed=seed) if pin_clvs else None
+    sharp_coverage = (n_sharp / n_closed) if n_closed else 0.0   # fraction of closed bets with a PINNACLE ref
+    con_clvs = [r[0] for r in consensus_rows]
     roi = (total_pnl / staked) if staked else None
     total_captures = sum(captures.values())
     missed_rate = (captures["missed"] / total_captures) if total_captures else 0.0
     go_live = bool(
-        sharp_ci and sharp_ci[0] > cfg.min_effect_size         # we BEAT THE SHARP close, net of fees (not circular)
-        and n_sharp >= MIN_BETS                                # enough sharp-referenced observations
+        sharp_ci and sharp_ci[0] > cfg.min_effect_size         # we BEAT THE (Pinnacle) SHARP close, net of fees
+        and n_sharp >= MIN_BETS                                # enough pinnacle-referenced observations
         and n_sharp_clusters >= cfg.min_clv_clusters           # enough INDEPENDENT weeks
-        and sharp_coverage >= cfg.min_sharp_coverage           # the sharp sample isn't a biased sliver
+        and sharp_coverage >= cfg.min_sharp_coverage           # the pinnacle sample isn't a biased sliver
         and roi is not None and roi >= 0.0                     # realized fills didn't lose money net of fees
         and missed_rate <= cfg.max_missed_capture_rate         # the closing-line sample isn't a thin leftover
     )
@@ -185,18 +198,20 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
         "mean_clv": (float(np.mean(net_clvs)) if net_clvs else None),                 # Kalshi-close CLV -- INFORMATIONAL
         "mean_gross_clv": (float(np.mean([r[1] for r in rows])) if rows else None),   # informational
         "clv_ci": ci,                                                                 # Kalshi-close CLV -- INFORMATIONAL
-        "mean_sharp_clv": (float(np.mean(sharp_net_clvs)) if sharp_net_clvs else None),  # BINDING gate metric
+        "mean_sharp_clv": (float(np.mean(pin_clvs)) if pin_clvs else None),           # BINDING gate metric (PINNACLE)
         "sharp_ci": sharp_ci,
-        "n_sharp": n_sharp,
+        "n_sharp": n_sharp,                                                           # PINNACLE-referenced bets
         "n_sharp_clusters": n_sharp_clusters,
         "sharp_coverage": sharp_coverage,
         "min_sharp_coverage": cfg.min_sharp_coverage,
         "sharp_sources": sharp_sources,
+        "n_consensus": len(con_clvs),                                                 # INFORMATIONAL (does NOT gate)
+        "mean_consensus_clv": (float(np.mean(con_clvs)) if con_clvs else None),
         "min_effect_size": cfg.min_effect_size,
         "min_clusters": cfg.min_clv_clusters,
         "missed_rate": missed_rate,
         "max_missed_rate": cfg.max_missed_capture_rate,
         "go_live": go_live,
         "buckets": {lab: {"n": len(v), "mean_clv": float(np.mean(v))} for lab, v in buckets.items()},
-        "captures": captures,  # {auto, manual, missed} -- closing-line capture health
+        "captures": captures,  # {auto, manual, sharp_only, missed} -- closing-line capture health
     }

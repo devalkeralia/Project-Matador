@@ -107,6 +107,29 @@ def test_summarize_go_live_true_path_and_cogates():
     assert low["n_sharp"] == 240 and low["sharp_coverage"] < _cfg().min_sharp_coverage and low["go_live"] is False
 
 
+def test_summarize_consensus_does_not_gate_but_is_reported():
+    # 240 CONSENSUS-sourced sharp rows with a strong CLV over 12 weeks must NOT go live (a soft-book
+    # median isn't a sharp line); the identical sample sourced 'pinnacle' DOES.
+    def sample(source):
+        return [_bet_in_week(i % 12, price=0.70, closing_price=0.76, sharp_close=0.78, sharp_source=source,
+                             closing_source="auto", fill_price=0.70, contracts_filled=1, result="win") for i in range(240)]
+    con = summarize(sample("consensus"), _cfg(), seed=0)
+    assert con["n_consensus"] == 240 and con["mean_consensus_clv"] is not None
+    assert con["n_sharp"] == 0 and con["go_live"] is False        # consensus alone never satisfies the gate
+    pin = summarize(sample("pinnacle"), _cfg(), seed=0)
+    assert pin["n_sharp"] == 240 and pin["go_live"] is True
+
+
+def test_summarize_sharp_only_rows_count_toward_coverage_not_missed():
+    # a pinnacle ref with NO Kalshi close (thin book -> sharp_only) still counts as a closed, pinnacle-covered bet
+    bets = [_bet_in_week(i % 12, price=0.70, closing_price=None, sharp_close=0.78, sharp_source="pinnacle",
+                         closing_source="sharp_only:auto") for i in range(3)]
+    s = summarize(bets, _cfg(), seed=0)
+    assert s["n_sharp"] == 3 and s["sharp_coverage"] == pytest.approx(1.0)   # 3 pinnacle / 3 closed
+    assert s["n_clv"] == 0                                                    # no Kalshi close
+    assert s["captures"]["sharp_only"] == 3 and s["captures"]["missed"] == 0  # sharp_only is not a miss
+
+
 def test_summarize_tallies_capture_health():
     bets = [
         _bet(closing_source="auto", closing_price=0.52),
@@ -116,7 +139,7 @@ def test_summarize_tallies_capture_health():
         _bet(),                                          # never attempted -> uncounted
     ]
     caps = summarize(bets, _cfg(), seed=0)["captures"]
-    assert caps == {"auto": 1, "manual": 1, "missed": 2}
+    assert caps == {"auto": 1, "manual": 1, "sharp_only": 0, "missed": 2}
 
 
 def test_summarize_clv_entry_is_the_alert_price_not_the_fill():

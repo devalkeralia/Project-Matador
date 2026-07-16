@@ -56,5 +56,5 @@ def test_clv_report_segments_match_manual_summarize():
     assert bands[mod._BANDS[0]]["n_clv"] == 1             # longshot: ATP 0.30
 
     caps = summarize(bets, cfg)["captures"]
-    assert caps == {"auto": 2, "manual": 1, "missed": 1}
+    assert caps == {"auto": 2, "manual": 1, "sharp_only": 0, "missed": 1}
     conn.close()

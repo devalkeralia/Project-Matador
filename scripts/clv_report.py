@@ -60,13 +60,15 @@ def segment_summaries(bets, cfg) -> dict:
 
 
 def _fmt_segment(label: str, s: dict) -> str:
-    n = s["n_clv"]
+    # The BINDING metric is sharp CLV (vs Pinnacle's close); Kalshi-close CLV n shown as context.
+    n = s["n_sharp"]
     if n == 0:
-        return f"  {label:<20} n=0   (no captured closing lines)"
-    lo, hi = s["clv_ci"]
+        return f"  {label:<20} sharp n=0  (Kalshi-CLV n={s['n_clv']}, sharp coverage {s['sharp_coverage']:.0%})"
+    lo, hi = s["sharp_ci"]
     gate = "GO-LIVE ✅" if s["go_live"] else "not met"
     note = "" if n >= MIN_BETS else "  [informational: < 200-bet floor]"
-    return f"  {label:<20} n={n:<4} mean net CLV {s['mean_clv']:+.2%}  95% CI [{lo:+.2%}, {hi:+.2%}]  {gate}{note}"
+    return (f"  {label:<20} sharp n={n:<4} mean {s['mean_sharp_clv']:+.2%}  95% CI [{lo:+.2%}, {hi:+.2%}]  "
+            f"cov {s['sharp_coverage']:.0%}  {gate}{note}")
 
 
 def main() -> None:
@@ -80,7 +82,10 @@ def main() -> None:
     c = overall["captures"]
     print(f"=== CLV report — {overall['n_opportunities']} opportunities logged, "
           f"{overall['n_clv']} with a closing line ===")
-    print(f"Capture health: {c['auto']} auto / {c['manual']} manual / {c['missed']} missed\n")
+    print(f"Capture health: {c['auto']} auto / {c['manual']} manual / {c['missed']} missed")
+    sc = overall["sharp_sources"]
+    print(f"Sharp references: {sc['pinnacle']} pinnacle / {sc['consensus']} consensus "
+          f"(coverage {overall['sharp_coverage']:.0%} of closed bets)\n")
     print("Overall:")
     print(_fmt_segment("all", overall))
 

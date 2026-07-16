@@ -212,10 +212,14 @@ def format_close(r: dict) -> str:
                              f"marked missed. If you're sure it hasn't started, re-run: /close {r['opp_id']} pre",
         }.get(r["reason"], f"Close failed for opp #{r['opp_id']}: {r['reason']}")
     delta_cents = (r["closing_price"] - r["entry_price"]) * 100
-    return (
+    line = (
         f"📌 Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} @ "
         f"{_cents(r['closing_price'])} (entry {_cents(r['entry_price'])} → CLV {delta_cents:+.0f}¢)"
     )
+    if r.get("sharp_close") is not None:  # the sharp (Pinnacle) reference -- the binding go-live basis
+        sharp_edge = (r["sharp_close"] - r["entry_price"]) * 100
+        line += f"  · sharp {r.get('sharp_source')} {_cents(r['sharp_close'])} (edge {sharp_edge:+.0f}¢)"
+    return line
 
 
 def format_stats(s: dict) -> str:
@@ -230,26 +234,33 @@ def format_stats(s: dict) -> str:
         lines.append("Trades recorded: none yet (use /result)")
     c = s["captures"]
     lines.append(f"Captures: {c['auto']} auto / {c['manual']} manual / {c['missed']} missed")
-    lines += ["", "Closing-line value (the go-live metric, NET of fees):"]
-    if s["n_clv"]:
-        lo, hi = s["clv_ci"]
-        lines.append(f"  {s['n_clv']} bet(s) over {s['n_clusters']} week(s)")
-        lines.append(f"  Mean net CLV {s['mean_clv']:+.1%} (gross {s['mean_gross_clv']:+.1%}) · 95% CI (BCa) [{lo:+.1%}, {hi:+.1%}]")
-        if s["buckets"]:
-            seg = ", ".join(f"{lab} {v['mean_clv']:+.1%} (n={v['n']})" for lab, v in sorted(s["buckets"].items()))
-            lines.append(f"  by experience: {seg}")
+    lines += ["", "Closing-line value vs the SHARP close — the go-live metric (NET of fees):"]
+    if s["n_sharp"]:
+        lo, hi = s["sharp_ci"]
+        srcs = s["sharp_sources"]
+        lines.append(f"  {s['n_sharp']} sharp-referenced bet(s) over {s['n_sharp_clusters']} week(s) "
+                     f"({srcs['pinnacle']} pinnacle / {srcs['consensus']} consensus)")
+        lines.append(f"  Mean sharp CLV {s['mean_sharp_clv']:+.1%} · 95% CI (BCa) [{lo:+.1%}, {hi:+.1%}]")
         if s["go_live"]:
             lines.append("  Go-live gate: ✅ MET")
         else:
             roi = s["roi"]
             roi_str = f"{roi:+.1%}" if roi is not None else "n/a"
-            # every co-gate that must clear before real money (all AND-ed)
-            lines.append("  Go-live gate: not yet — needs ALL of:")
-            lines.append(f"    · CI lower bound > {s['min_effect_size']:+.1%}  (now {lo:+.1%})")
-            lines.append(f"    · ≥ {MIN_BETS} bets  ({s['n_clv']}/{MIN_BETS})")
-            lines.append(f"    · ≥ {s['min_clusters']} weeks  ({s['n_clusters']}/{s['min_clusters']})")
+            lines.append("  Go-live gate: not yet — needs ALL of:")   # every co-gate AND-ed
+            lines.append(f"    · sharp-CLV CI lower bound > {s['min_effect_size']:+.1%}  (now {lo:+.1%})")
+            lines.append(f"    · ≥ {MIN_BETS} sharp bets  ({s['n_sharp']}/{MIN_BETS})")
+            lines.append(f"    · ≥ {s['min_clusters']} weeks  ({s['n_sharp_clusters']}/{s['min_clusters']})")
+            lines.append(f"    · sharp coverage ≥ {s['min_sharp_coverage']:.0%}  (now {s['sharp_coverage']:.0%})")
             lines.append(f"    · realized net-ROI ≥ 0  ({roi_str})")
             lines.append(f"    · missed-capture rate ≤ {s['max_missed_rate']:.0%}  (now {s['missed_rate']:.0%})")
     else:
-        lines.append("  No closing lines captured yet (use /close near match start).")
+        lines.append("  No sharp closing lines yet — the gate needs a sharp reference (see /notes).")
+    # Kalshi-own-close CLV is circular, so it's informational only from here.
+    if s["n_clv"]:
+        lo2, hi2 = s["clv_ci"]
+        lines.append(f"  (info) Kalshi-close CLV {s['mean_clv']:+.1%} over {s['n_clv']} bet(s) / "
+                     f"{s['n_clusters']} week(s) · CI [{lo2:+.1%}, {hi2:+.1%}]")
+        if s["buckets"]:
+            seg = ", ".join(f"{lab} {v['mean_clv']:+.1%} (n={v['n']})" for lab, v in sorted(s["buckets"].items()))
+            lines.append(f"  (info) by experience: {seg}")
     return "\n".join(lines)

@@ -44,7 +44,8 @@ def _cfg():
 
 
 def _bet(**o):
-    f = dict(price=0.50, fill_price=None, closing_price=None, closing_source=None, result=None,
+    f = dict(price=0.50, fill_price=None, closing_price=None, closing_source=None,
+             sharp_close=None, sharp_source=None, result=None,
              contracts_filled=None, occurrence_datetime="2026-07-13T13:00:00Z",
              ts="2026-07-13T12:00:00Z", experience=100)
     f.update(o)
@@ -79,24 +80,31 @@ def _bet_in_week(week_idx, **o):
 
 
 def test_summarize_go_live_true_path_and_cogates():
-    # The TRUE go-live path: 240 bets over 12 ISO weeks, gross CLV +6c @ 0.70 (net ~+4.5c > 1.5c bar),
-    # wins recorded (ROI > 0), 0 missed -> MET. Then flip each co-gate and confirm it blocks.
-    def sample(result="win", extra_missed=0):
-        bets = [_bet_in_week(i % 12, price=0.70, closing_price=0.76, closing_source="auto",
-                             fill_price=0.70, contracts_filled=1, result=result) for i in range(240)]
+    # TRUE go-live path: 240 bets / 12 ISO weeks, SHARP close 0.78 vs entry 0.70 (sharp net ~+6.5c >
+    # 1.5c bar), Kalshi close too, wins recorded (ROI>0), full sharp coverage, 0 missed -> MET.
+    # Then flip each binding co-gate and confirm it blocks. The BINDING metric is the SHARP track.
+    def sample(result="win", sharp=True, extra_missed=0, extra_kalshi_only=0):
+        bets = [_bet_in_week(i % 12, price=0.70, closing_price=0.76,
+                             sharp_close=(0.78 if sharp else None), sharp_source=("pinnacle" if sharp else None),
+                             closing_source="auto", fill_price=0.70, contracts_filled=1, result=result)
+                for i in range(240)]
         bets += [_bet_in_week(0, closing_source="missed:late[auto]") for _ in range(extra_missed)]
+        # Kalshi-close-only bets: a valid Kalshi CLV but NO sharp ref -> dilute sharp coverage.
+        bets += [_bet_in_week(i % 12, price=0.70, closing_price=0.76, closing_source="auto",
+                              fill_price=0.70, contracts_filled=1, result="win") for i in range(extra_kalshi_only)]
         return bets
 
     met = summarize(sample(), _cfg(), seed=0)
-    assert met["n_clv"] == 240 and met["n_clusters"] == 12 and met["clv_ci"][0] > _cfg().min_effect_size
-    assert met["roi"] > 0 and met["missed_rate"] == 0.0
-    assert met["go_live"] is True                                   # all co-gates clear
+    assert met["n_sharp"] == 240 and met["n_sharp_clusters"] == 12
+    assert met["sharp_coverage"] == pytest.approx(1.0) and met["sharp_ci"][0] > _cfg().min_effect_size
+    assert met["sharp_sources"] == {"pinnacle": 240, "consensus": 0}
+    assert met["roi"] > 0 and met["go_live"] is True                       # all co-gates clear
 
-    losing = summarize(sample(result="loss"), _cfg(), seed=0)       # CLV still +, but realized ROI < 0
-    assert losing["roi"] < 0 and losing["go_live"] is False         # ROI co-gate blocks
-
-    thin = summarize(sample(extra_missed=130), _cfg(), seed=0)      # 130/(240+130) missed = 35% > 30%
-    assert thin["missed_rate"] > _cfg().max_missed_capture_rate and thin["go_live"] is False
+    assert summarize(sample(sharp=False), _cfg(), seed=0)["go_live"] is False   # NO sharp ref -> gate can't pass
+    assert summarize(sample(result="loss"), _cfg(), seed=0)["go_live"] is False # realized net-ROI < 0
+    assert summarize(sample(extra_missed=130), _cfg(), seed=0)["go_live"] is False  # missed-rate co-gate (35% > 30%)
+    low = summarize(sample(extra_kalshi_only=300), _cfg(), seed=0)          # 240 sharp / 540 closed = 44% < 50%
+    assert low["n_sharp"] == 240 and low["sharp_coverage"] < _cfg().min_sharp_coverage and low["go_live"] is False
 
 
 def test_summarize_tallies_capture_health():

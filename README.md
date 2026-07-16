@@ -19,13 +19,13 @@ value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, 
 On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
 (data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
 / WTA 0.2165; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure + a
-holistic review-hardening pass are built (243 tests):** always-on Docker deployment, a scheduled
-systematic scan (unbiased sampling), a postponement-aware **fail-closed** closing-line capture, an
-offline `clv_report.py`, and a **hardened go-live gate** (ISO-week clusters, BCa interval, realized-ROI
-+ capture-health co-gates, thin-player abstain, flat paper stakes). **One prerequisite remains before
-the gate can mean +EV: a live sharp-line reference** — the current CLV-vs-Kalshi-close gate can't
-separate a soft Kalshi close from model error (see the runbook). **v1 = pre-match value alerts only**
-(in-play mean-reversion pilot = v2).
+holistic review-hardening pass + the sharp-line reference are built (257 tests):** always-on Docker
+deployment, a scheduled systematic scan (unbiased sampling), a postponement-aware **fail-closed**
+closing-line capture, an offline `clv_report.py`, and a **hardened go-live gate** now bound to
+**beating the SHARP (Pinnacle, via the-odds-api) closing line** — the de-circularized edge test —
+with ISO-week BCa CI, realized-ROI + capture-health + sharp-coverage co-gates, thin-player abstain,
+and flat paper stakes. What remains is the paper run itself (live-verified at the August Masters when
+odds post). **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
 _Last updated: 2026-07-14_
 
@@ -62,14 +62,14 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-The infrastructure and the hardened go-live gate are built (Phases 1–7). What remains is the
-**forward CLV paper-test itself** — run the bot through live tournaments and accumulate the sample —
-plus **one prerequisite before a "MET" can mean +EV: a live sharp-line reference** (the gate compares
-to Kalshi's own close, which can't separate a soft line from model error). See the
-**Phase-6 forward-CLV paper-test runbook** below for the full protocol and the hardened go-live
-criteria, and [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"** for the
-sharp-reference design, deferred model levers, and monitored gaps. To run the bot: put `TELEGRAM_TOKEN`
-+ `TELEGRAM_CHAT_ID` in `secrets/.env`, then `.venv/bin/python scripts/bot.py` (or `docker compose up -d`).
+The infrastructure, the hardened go-live gate, and the **sharp-line reference** are all built
+(Phases 1–7). What remains is the **forward CLV paper-test itself** — run the bot through live
+tournaments and accumulate the sample, then read the go-live gate (now bound to beating Pinnacle's
+close). See the **Phase-6 forward-CLV paper-test runbook** below for the protocol + the August-Masters
+live-verification, and [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"**
+for deferred model levers and monitored gaps. To run the bot: put `TELEGRAM_TOKEN` + `TELEGRAM_CHAT_ID`
+in `secrets/.env` and the odds-api key in `secrets/odds_api_key.txt`, then
+`.venv/bin/python scripts/bot.py` (or `docker compose up -d`).
 
 ## Run as a service
 
@@ -125,12 +125,13 @@ pending closing-line captures are rebuilt from the DB on startup, so none are lo
 The binding go-live gate. **Start at the August Masters main draw** (Toronto/Cincinnati) — liquid
 markets where the gate thresholds are meaningful.
 
-> **Prerequisite before the gate can authorize real money — a sharp-line reference.** The gate below
-> compares our entry to Kalshi's *own* closing MID, which can't separate "Kalshi was soft (real edge)"
-> from "our model was wrong and the close corrected away from us" — and the model doesn't beat sharp
-> lines. Wire a live sharp odds source (e.g. Pinnacle via [the-odds-api.com](https://the-odds-api.com),
-> Shin-devigged) captured at alert + close and gate on beating *that*. Until then, run the paper-test to
-> exercise the pipeline and study CLV/ROI, but treat a "MET" as **necessary, not sufficient**.
+> **The gate is bound to beating the SHARP close** (Pinnacle via the-odds-api, Shin-devigged),
+> de-circularizing it — CLV vs Kalshi's *own* close can't separate "Kalshi was soft (real edge)" from
+> "our model was wrong and the close corrected away from us". The sharp fair prob is captured alongside
+> the Kalshi mid at close; go-live binds on the sharp CLV track. **Live-verify at the August Masters**
+> when odds post: confirm the exact `tennis_*` slugs via `GET /v4/sports`, dry-run `sharp_fair_prob` on
+> a few live opps (a yes- AND a no-side), watch `sharp_coverage` in `/stats`, and add `names.ALIASES`
+> for any systematic name misses.
 
 1. **Recalibrate the liquidity gate first:** `.venv/bin/python scripts/scan.py dry-run --tour atp --tour wta`
    (read-only). It prints the depth/spread distribution per tour **and per tier** (H2H + outright
@@ -147,15 +148,30 @@ markets where the gate thresholds are meaningful.
    and `.venv/bin/python scripts/clv_report.py` (segments net CLV by tour / price band / flag / week).
    - **Watch:** capture health (a high `missed` count = a thin/biased sample — investigate before
      trusting the number); `n` → 200; day-clusters → 30; the net-CLV 95% CI lower bound.
-   - **MET** (`/stats` shows *Go-live gate: ✅ MET*): net-of-fee ISO-**week**-clustered **BCa** 95% CI
-     lower bound `> min_effect_size` (0.015), `n ≥ 200`, `≥ 12` week-clusters, **realized net-ROI ≥ 0**,
-     **missed-capture rate ≤ 30%** — AND the sharp-line prerequisite above. Only then consider real money.
+   - **MET** (`/stats` shows *Go-live gate: ✅ MET*): the **SHARP** CLV (entry vs Pinnacle's close),
+     net-of-fee, ISO-**week**-clustered **BCa** 95% CI lower bound `> min_effect_size` (0.015), `≥ 200`
+     sharp-referenced bets, `≥ 12` week-clusters, **sharp-coverage ≥ 50%**, **realized net-ROI ≥ 0**,
+     **missed-capture ≤ 30%**. (Kalshi-close CLV is informational.) Only then consider real money.
    - **Flat** (enough sample, CI straddles/below the effect size): the model has no Kalshi edge. The
      first documented lever is **recency / time-decayed Elo** (see DESIGN-DECISIONS "Open items") —
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
 
+- **2026-07-16 — Sharp-line reference (de-circularizes the go-live gate); 257 tests.** The gate no
+  longer measures CLV vs Kalshi's *own* close (circular — can't tell a soft line from model error);
+  it now gates on **beating the SHARP closing line** (Pinnacle via [the-odds-api](https://the-odds-api.com),
+  Shin-devigged). New `matador/sharp.py` (`SharpOddsClient` + a pure `sharp_fair_prob` reusing
+  `devig_shin` + the `surname_key(canonical_key(...))` pair-match idiom); the auto/manual close-capture
+  now records the sharp fair prob (`sharp_close`/`sharp_source`) alongside the Kalshi mid, best-effort
+  (a sharp miss never disturbs the Kalshi capture). `clv.summarize` runs a parallel **sharp CLV** track
+  and binds `go_live` on it — sharp-CLV BCa CI lower bound `> min_effect_size`, ≥ 200 sharp-referenced
+  bets, ≥ 12 weeks, **sharp-coverage ≥ 50%**, realized net-ROI ≥ 0, missed-capture ≤ 30% — with the
+  Kalshi-close CLV demoted to informational. Pinnacle-first with a **consensus-median fallback**
+  (config `sharp_consensus_fallback`); coverage ≈ our liquid universe (Slams/Masters/500s), so an
+  uncovered/unmatched match simply has no sharp ref (fail-safe). Persist the `opponent` name for a
+  robust full-pair match. Key lives in `secrets/odds_api_key.txt` (free tier). Live client verified
+  end-to-end; the full name-match/de-vig path live-verifies at the August Masters when odds post.
 - **2026-07-14 — Holistic review-hardening (15-agent whole-project review → fixes); 243 tests.** A
   full-project review flagged that the paper-test, as built, could green-light real money on noise.
   Fixes:

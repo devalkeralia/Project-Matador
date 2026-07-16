@@ -351,18 +351,24 @@ bets across live tournaments; `/stats` reports the net-of-fee gate.
 **Validation / go-live gate (binding):**
 - **A pre-match edge is NOT yet demonstrated** — `p_model` does not beat the sharp bookmaker close
   (Brier-optimal blend weight 0; ~−10.6% flat ROI on held-out). **Do not bet real money.**
-- Go-live bar (implemented in `clv.summarize` / `/stats`, hardened 2026-07-14): **net-of-fee CLV,
-  ISO-WEEK-clustered BCa bootstrap 95% CI lower bound > `min_effect_size` (0.015), ≥ 200 bets, ≥ 12
-  week-clusters, realized net-ROI ≥ 0, AND missed-capture rate ≤ `max_missed_capture_rate` (0.30).**
-  (Was day-clustered percentile at a 0.005 bar with no ROI/health co-gate — that biased toward a
-  false green-light.) Do not bet real money until MET.
-- **PREREQUISITE — a sharp-line reference (staged; the review's #1 finding).** The gate compares our
-  entry to Kalshi's OWN close, which cannot separate "Kalshi was soft (real edge)" from "our model was
-  wrong and the close corrected away from us". Beating the close is only +EV when the close is the
-  sharpest estimate — but the whole thesis is that Kalshi's is soft. Fix (P7-E): capture a live sharp
-  odds price (e.g. Pinnacle via the-odds-api.com, Shin-devigged) at alert AND close, and gate on
-  beating THAT. Blocked on the owner picking/provisioning an odds provider + API key. Until then a
-  "MET" is necessary-not-sufficient.
+- Go-live bar (implemented in `clv.summarize` / `/stats`, hardened 2026-07-14, sharp-bound 2026-07-16):
+  the BINDING metric is now **SHARP CLV** (entry vs Pinnacle's Shin-devigged close): net-of-fee,
+  ISO-WEEK-clustered BCa 95% CI lower bound > `min_effect_size` (0.015), ≥ 200 sharp-referenced bets,
+  ≥ 12 week-clusters, **sharp-coverage ≥ `min_sharp_coverage` (0.5)**, realized net-ROI ≥ 0, AND
+  missed-capture ≤ `max_missed_capture_rate` (0.30). Kalshi-close CLV is now INFORMATIONAL. (Earlier it
+  was day-clustered percentile at a 0.005 bar vs Kalshi's own close — biased toward a false green-light
+  AND circular.) Do not bet real money until MET.
+- **Sharp-line reference — BUILT (P7-E, 2026-07-16; the review's #1 fix).** CLV vs Kalshi's OWN close
+  is circular (can't separate "Kalshi was soft" from "model wrong, close corrected away from us"), so
+  the gate now binds on beating a SHARP close. `matador/sharp.py`: `SharpOddsClient` (the-odds-api v4,
+  Pinnacle EU) + a pure `sharp_fair_prob` (full-pair `surname_key(canonical_key)` match, reuses
+  `devig_shin`); the close-capture records the sharp fair prob (`sharp_close`/`sharp_source`) best-effort
+  alongside the Kalshi mid (a sharp miss never disturbs the Kalshi capture). Pinnacle-first with a
+  **consensus-median fallback** (`sharp_consensus_fallback`); coverage ≈ our liquid universe, so an
+  uncovered/unmatched match simply has no sharp ref (fail-safe → excluded from the gate). Key in
+  `secrets/odds_api_key.txt`; disabling it (no key) means the gate can never pass — correct, no real
+  money without a sharp reference. Live client verified; full name-match/de-vig live-verifies at the
+  August Masters when odds post (re-confirm the `tennis_*` slugs, which drift yearly).
 - **Liquidity gate thresholds** — set to INTERIM values on 2026-07-13 (`min_liquidity: 500`,
   fill-driven for the $100 capped stake; `max_spread: 0.03`, just above the observed 2¢ p90) from a
   `scan.py dry-run` on a post-Wimbledon 250 slate (tight books: spread med ~1¢, depth med ~1.5k–2.7k

@@ -19,7 +19,7 @@ value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, 
 On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
 (data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
 / WTA 0.2165; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure + a
-holistic review-hardening pass + the sharp-line reference are built (257 tests):** always-on Docker
+holistic review-hardening pass + the sharp-line reference (Fable-5 review-hardened) are built (266 tests):** always-on Docker
 deployment, a scheduled systematic scan (unbiased sampling), a postponement-aware **fail-closed**
 closing-line capture, an offline `clv_report.py`, and a **hardened go-live gate** now bound to
 **beating the SHARP (Pinnacle, via the-odds-api) closing line** — the de-circularized edge test —
@@ -27,7 +27,7 @@ with ISO-week BCa CI, realized-ROI + capture-health + sharp-coverage co-gates, t
 and flat paper stakes. What remains is the paper run itself (live-verified at the August Masters when
 odds post). **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-14_
+_Last updated: 2026-07-16_
 
 ## What this is
 
@@ -158,6 +158,23 @@ markets where the gate thresholds are meaningful.
 
 ## Changelog
 
+- **2026-07-16 — P7-E review-hardening (independent Fable-5 review → fixes); 266 tests.** A fresh-model
+  adversarial review found the sharp *math* sound but 6 capture-path/gate-composition defects; fixed all
+  before the (unbackfillable) paper run:
+  - **Gate is now Pinnacle-only** — a soft-book `consensus` reference is captured + reported but can no
+    longer satisfy go-live (it was pooled into the binding CI, a partial re-circularization).
+  - **Too-early capture guard** — a batch `/close` no longer snapshots a far-future match's line as its
+    "close" (it skips rows > 60 min from start, leaving them pending); the binding metric keeps its
+    late-information content.
+  - **Idempotent, non-destructive capture** — an already-captured row is never re-written (a re-fired
+    auto job can't overwrite a good `sharp_close` with NULL on a transient odds-API hiccup; a late
+    re-`/close` can't relabel a clean row "missed").
+  - **Sharp attempted even on a thin Kalshi book** (recorded `sharp_only`), so a one-sided Kalshi book
+    no longer censors an independently-available Pinnacle line and bias the sample upward.
+  - **Batch robustness** — a null team name can't kill a whole board's sharp refs; sharp fetch failures
+    are negative-cached so a rate-limited API can't cascade rows past the capture window.
+  - **Visibility** — `_sharp_client` warns (not silent) when the key is missing/unreadable; the daily
+    heartbeat reports sharp coverage + pinnacle/consensus counts.
 - **2026-07-16 — Sharp-line reference (de-circularizes the go-live gate); 257 tests.** The gate no
   longer measures CLV vs Kalshi's *own* close (circular — can't tell a soft line from model error);
   it now gates on **beating the SHARP closing line** (Pinnacle via [the-odds-api](https://the-odds-api.com),

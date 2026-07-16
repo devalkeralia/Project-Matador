@@ -369,6 +369,13 @@ bets across live tournaments; `/stats` reports the net-of-fee gate.
   `secrets/odds_api_key.txt`; disabling it (no key) means the gate can never pass — correct, no real
   money without a sharp reference. Live client verified; full name-match/de-vig live-verifies at the
   August Masters when odds post (re-confirm the `tennis_*` slugs, which drift yearly).
+  - **Review-hardened (Fable-5 independent review, 2026-07-16):** the math verified sound; 6 capture/gate
+    fixes applied. Decisions: the binding gate is **Pinnacle-only** (a soft-book `consensus` ref is
+    captured + reported but never gates — it isn't a sharp line); a **too-early capture guard**
+    (`CAPTURE_EARLIEST=60m`) stops a batch `/close` snapshotting a far-future line as "the close";
+    capture is **idempotent + non-destructive** (never overwrite a good `sharp_close` / relabel a clean
+    row); the sharp line is attempted **even on a thin Kalshi book** (`sharp_only`); + null-team/negative-
+    cache robustness and a coverage/warning heartbeat. `sharp_coverage` = pinnacle / any-closed bets.
 - **Liquidity gate thresholds** — set to INTERIM values on 2026-07-13 (`min_liquidity: 500`,
   fill-driven for the $100 capped stake; `max_spread: 0.03`, just above the observed 2¢ p90) from a
   `scan.py dry-run` on a post-Wimbledon 250 slate (tight books: spread med ~1¢, depth med ~1.5k–2.7k

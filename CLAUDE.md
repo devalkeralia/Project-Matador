@@ -9,11 +9,14 @@ with a suggested ¼-Kelly stake** when a Kalshi contract is mispriced. **The use
 trade manually — this bot never places orders.**
 
 ## Status & scope
-**v1 is built through Phase 7** (data plumbing → surface-Elo model → edge/staking engine → Telegram
-bot → persistence/CLV → always-on deployment → holistic-review hardening); 243 tests, on `origin/main`.
-What remains is the **forward CLV paper-test** itself plus its one prerequisite — a **live sharp-line
-reference** (the go-live gate compares to Kalshi's own close, which can't separate a soft line from
-model error). See `README.md` (runbook) + the [[build-status]] memory for current state and next steps.
+**v1 is built end-to-end and twice review-hardened** (data plumbing → surface-Elo model → edge/staking
+engine → Telegram bot → persistence/CLV → always-on deployment → holistic-review hardening → sharp-line
+reference + a Fable-5 review pass); 266 tests, on `origin/main`. The go-live gate is **de-circularized**:
+it binds on **beating the SHARP (Pinnacle, via the-odds-api) closing line**, not Kalshi's own close.
+**Nothing left to build** — what remains is the live **forward CLV paper-test** itself (deploy; verify
+the sharp path at the August Masters; accumulate 200+ bets). Model has NO demonstrated edge yet — the
+paper test decides; no real money until the gate is MET. See `README.md` (runbook) + [[build-status]] +
+[[go-live-prerequisites]] for current state and next steps.
 - **v1 = pre-match value alerts only.** Win probability = surface-weighted **match Elo** →
   logistic `p = 1/(1+10^(−diff/scale))` where `scale` is **fitted per tour × best-of** (the fixed
   /400 survives only in the Elo rating-update curve) (no serve model; serve/return + recursion are v2).

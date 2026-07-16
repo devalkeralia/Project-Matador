@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**Phases 4–5 (Telegram bot + persistence/CLV) built, then review-hardened — 220 tests passing.** An always-on bot
+**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 266 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -19,7 +19,7 @@ value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, 
 On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
 (data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
 / WTA 0.2165; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure + a
-holistic review-hardening pass + the sharp-line reference (Fable-5 review-hardened) are built (266 tests):** always-on Docker
+holistic review-hardening pass + the sharp-line reference (Fable-5 review-hardened) are built:** always-on Docker
 deployment, a scheduled systematic scan (unbiased sampling), a postponement-aware **fail-closed**
 closing-line capture, an offline `clv_report.py`, and a **hardened go-live gate** now bound to
 **beating the SHARP (Pinnacle, via the-odds-api) closing line** — the de-circularized edge test —

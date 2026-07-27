@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 266 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 277 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -24,8 +24,20 @@ deployment, a scheduled systematic scan (unbiased sampling), a postponement-awar
 closing-line capture, an offline `clv_report.py`, and a **hardened go-live gate** now bound to
 **beating the SHARP (Pinnacle, via the-odds-api) closing line** — the de-circularized edge test —
 with ISO-week BCa CI, realized-ROI + capture-health + sharp-coverage co-gates, thin-player abstain,
-and flat paper stakes. What remains is the paper run itself (live-verified at the August Masters when
-odds post). **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
+and flat paper stakes.
+
+**The sharp path is LIVE-VERIFIED (2026-07-27) — no longer waiting on August.** All 43/43 the-odds-api
+tennis slugs are reachable with zero drift, Pinnacle is present on live events, and `sharp_fair_prob`
+returns a de-vigged probability end-to-end. The same session repaired a **silently broken weekly
+refresh** (upstream moved to Git LFS; the fetch had been overwriting good archives with pointer stubs)
+and measured the **layoff** question — real in probability space but not actionable, so inactivity decay
+was deliberately **not** built and `staleness` is logged for a forward sharp-CLV read instead, with
+pre-registered criteria (see DESIGN-DECISIONS **"Layoff / inactivity"**).
+
+**What remains is only the paper run itself:** provision the host per [`DEPLOY.md`](./DEPLOY.md), then
+accumulate 200+ sharp-referenced paper bets across 12+ ISO weeks and read the gate. Model still has
+**no demonstrated edge** — do not bet real money until the gate is MET.
+**v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
 _Last updated: 2026-07-27_
 
@@ -50,6 +62,7 @@ I trade the signal manually on Kalshi.
 | [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) | Every decision + rationale; the four-layer data stack; the fair-value model + contract math; open questions; interview record. |
 | [`RESEARCH-KALSHI.md`](./RESEARCH-KALSHI.md) | Sourced research: Kalshi API/fees/mechanics, the in-play viability verdict, live-score API comparison, and the UTS assessment — with URLs and a build-time verify checklist. |
 | [`CLAUDE.md`](./CLAUDE.md) | Auto-loaded by every session in this repo: scope, hard rules (secrets, no auto-bet), GitHub remote, settled design facts, and the Karpathy dev principles. |
+| [`DEPLOY.md`](./DEPLOY.md) | One-time VPS provisioning for the paper run (Hetzner US): server + firewall, deploy key, the three gitignored things a clone won't bring, the Kalshi-reachability check, Docker-only model bootstrap, and the refresh cron. |
 
 ## Recommended build setup
 
@@ -62,14 +75,21 @@ I trade the signal manually on Kalshi.
 
 ## Next step
 
-The infrastructure, the hardened go-live gate, and the **sharp-line reference** are all built
-(Phases 1–7). What remains is the **forward CLV paper-test itself** — run the bot through live
-tournaments and accumulate the sample, then read the go-live gate (now bound to beating Pinnacle's
-close). See the **Phase-6 forward-CLV paper-test runbook** below for the protocol + the August-Masters
-live-verification, and [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) **"Open items & deferred work"**
-for deferred model levers and monitored gaps. To run the bot: put `TELEGRAM_TOKEN` + `TELEGRAM_CHAT_ID`
-in `secrets/.env` and the odds-api key in `secrets/odds_api_key.txt`, then
-`.venv/bin/python scripts/bot.py` (or `docker compose up -d`).
+Nothing left to build. The remaining work is operational, in this order:
+
+1. **Provision the always-on host** — [`DEPLOY.md`](./DEPLOY.md), which starts at Hetzner account
+   signup and ends at the weekly-refresh cron. Note that `config.yaml`, `secrets/`, and `data/` are
+   all gitignored, so a fresh clone does **not** bring them; the runbook handles each.
+2. **Run the forward CLV paper test** — accumulate 200+ Pinnacle-referenced paper bets across 12+ ISO
+   weeks. See the **Phase-6 forward-CLV paper-test runbook** below for the protocol. Do **not** change
+   `p_model` mid-run: any model change invalidates the accumulated sample. The liquidity gate is frozen
+   at 500 / 0.03 for the whole sample by decision (2026-07-27) so it stays homogeneous.
+3. **Read the gate, then decide** — and only then consider the deferred model levers in
+   [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) (**"Layoff / inactivity"** for the pre-registered
+   decay criteria and the stronger K-floor hypothesis; **"Open items & deferred work"** for the rest).
+
+To run locally instead: put `TELEGRAM_TOKEN` + `TELEGRAM_CHAT_ID` in `secrets/.env` and the odds-api key
+in `secrets/odds_api_key.txt`, then `.venv/bin/python scripts/bot.py` (or `docker compose up -d`).
 
 ## Run as a service
 

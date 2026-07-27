@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 277 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 278 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -17,8 +17,8 @@ matches ranked by model strength; **`/close`** captures the closing line (manual
 match start), **`/result`** records outcomes, **`/stats`** reports hit rate, P&L, and **closing-line
 value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, `/notes`, `/help`.
 On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
-(data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2175
-/ WTA 0.2165; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure + a
+(data plumbing; per-tour surface-Elo model → fitted logistic → calibrated `p_model`, ATP Brier 0.2170
+/ WTA 0.2156; net-of-fee edge + ¼-Kelly staking engine) are done. **Phase 6 infrastructure + a
 holistic review-hardening pass + the sharp-line reference (Fable-5 review-hardened) are built:** always-on Docker
 deployment, a scheduled systematic scan (unbiased sampling), a postponement-aware **fail-closed**
 closing-line capture, an offline `clv_report.py`, and a **hardened go-live gate** now bound to
@@ -177,6 +177,29 @@ markets where the gate thresholds are meaningful.
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
+
+- **2026-07-27 — Underdog over-rating found + two pre-deploy fixes; 278 tests.** Chasing the alert
+  profile surfaced the model's **first-order defect**: it over-rates the market underdog by **+4.3pp**
+  overall and **+7.6pp at 15–25¢** — measured vig-free against the Shin-devigged close, **7.0 SEs** from
+  zero, while the market is calibrated (+0.5pp). That is why **70% of bets land on the underdog side**.
+  It is *not* shrinkage (an n0 sweep moved it 5%) and *not* an under-fitted scale (the shipped scale is
+  already log-loss-optimal); it is structural **under-dispersion** of Elo rating differences, whose real
+  fix is a better model (v2 serve/return). It also can't be recalibrated away honestly — the only odds
+  data we hold *is* the evaluation window. Two changes made before the run starts, since `p_model` must
+  be frozen once it does:
+  - **`shrinkage_n0` 10 → 0**, justified independently: with the scale fitted on **train only**, n0=0
+    beats 5 and 10 on **both** Brier and log-loss for **both** tours, monotone in n0 — resolving the
+    Phase-2 "revisit n0=0 vs 10" item. Thin players are already covered by the `thin_matches` abstain.
+    Model artifact rebuilt; production held-out calibration improves to **ATP Brier 0.2170 / log-loss
+    0.6215, WTA 0.2156 / 0.6188** (was 0.2175 / 0.2165). Honest caveat: better calibration, slightly
+    *worse* backtest ROI — as `w*`=0.000 predicts.
+  - **`min_price` 0.10 → 0.20**, an explicitly **symptomatic** gate declining the least-trustworthy
+    band. Costs ~11% of alert volume. The threshold is a judgment call from the bias table, *not*
+    optimised (ROI is non-monotone past 0.20, so tuning on it would be test-set fitting).
+
+  Also noted: `backtest_vs_bookmaker.py` uses `model.json` scales fitted over the full record set
+  including 2025–26, so the shipped backtest is mildly optimistic (correct for production; the split
+  belongs in evaluation). See DESIGN-DECISIONS **"Underdog over-rating"**.
 
 - **2026-07-27 — Refresh pipeline repaired; layoff measured, decay NOT built; 277 tests.** Three
   independent findings while preparing the paper test:

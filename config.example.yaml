@@ -13,7 +13,9 @@ min_matches: 20
 min_liquidity: 100.0
 max_spread: 0.05
 
-min_price: 0.10     # favorite floor: don't back a side priced below this (deep-longshot Elo tails are unreliable + contracts balloon)
+min_price: 0.20     # favorite floor: don't back a side priced below this. 0.20 (was 0.10) because the
+                    # model over-rates the market underdog by +4.3pp overall / +7.2pp at 15-25c,
+                    # vig-free and 7 SEs (DESIGN-DECISIONS "Underdog over-rating"). Symptomatic gate.
 max_price: 0.95
 
 fee_coefficient: 0.07
@@ -64,7 +66,7 @@ elo:
   k_shift: 5.0
   k_pow: 0.4
   surface_weight: 0.3   # tuned on held-out log-loss (per-surface elo is noisier; weight it less)
-  shrinkage_n0: 10.0    # cold-start shrinkage toward the mean; fit on held-out (tempers thin-player overconfidence without under-valuing breakouts)
+  shrinkage_n0: 0.0     # cold-start shrinkage toward the mean. 0 beats 5 and 10 on held-out Brier AND log-loss for both tours (train-only fit, 2026-07-27); thin players are handled by the thin_matches abstain instead
   max_staleness_days: 365
 
 tours: [ATP, WTA]

@@ -22,7 +22,7 @@ class EloConfig(BaseModel):
     k_shift: float = 5.0
     k_pow: float = 0.4
     surface_weight: float = 0.3  # blend surface_weight*surface_elo + (1-w)*overall_elo; tuned on held-out log-loss (0.7 over-weighted the noisier per-surface elo)
-    shrinkage_n0: float = 10.0  # cold-start shrinkage: thin ratings keep n/(n+n0) of their deviation from initial; n0=10 fit on held-out (removes ~75% of thin-favorite overconfidence at ~0.4% log-loss cost; larger n0 under-values breakouts)
+    shrinkage_n0: float = 0.0  # cold-start shrinkage: thin ratings keep n/(n+n0) of their deviation from initial. 0 as of 2026-07-27: a train-only-fitted sweep showed n0=0 beats 5 and 10 on held-out Brier AND log-loss for BOTH tours (ATP 0.21695/0.62152 vs 0.21788/0.62364), monotone in n0 -- resolving the Phase-2 "revisit n0=0 vs 10" item. Thin players are handled by the thin_matches ABSTAIN, not by shrinkage.
     max_staleness_days: int = 365  # abstain if a player's ratings are older than this
     # The per-format logistic scales are FITTED per tour by scripts/build_ratings.py and
     # stored in data/model.json (not configured here).
@@ -64,7 +64,7 @@ class Config(BaseModel):
     min_matches: int = 20
     min_liquidity: float
     max_spread: float
-    min_price: float | None = 0.10  # favorite floor: don't back a side priced below this (deep longshots -- unreliable Elo tails, ballooning contract counts). Tunable.
+    min_price: float | None = 0.20  # favorite floor: don't back a side priced below this. Raised 0.10 -> 0.20 (2026-07-27): the model over-rates the market underdog by +4.3pp overall and +7.2pp at 15-25c (vig-free, 7 SEs) -- see DESIGN-DECISIONS "Underdog over-rating". SYMPTOMATIC gate, not a fix; 0.25 is equally supported and the exact value is a judgment call.
     max_price: float = 0.95
     fee_coefficient: float = 0.07
     adverse_gap: float = 0.15  # flag alerts whose net edge exceeds this for manual "recent news?" scrutiny (late injury/withdrawal the Elo can't see)

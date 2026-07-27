@@ -157,10 +157,12 @@ Before any real money we test edge vs the market (not just calibration vs outcom
 - **Decision:** do NOT bet real money on v1. The go-live bar stands: positive CLV over ~200+ forward
   paper bets, net of fees. Next build serves that (Phase 3 edge engine → Phase 4 alerts → log paper
   bets + CLV; segment CLV by experience to also test the breakout thesis).
-- **Cold-start shrinkage (why `shrinkage_n0=10`).** Thin favorites were measured ~+8pt overconfident
-  vs outcomes; shrinkage calibrates them (keeps a real breakout above average, kills the mirage that
-  would over-size via Kelly) without under-valuing breakouts (n0≥20 overshoots). Overall held-out
-  log-loss is best at n0=0, so **revisit n0=0 vs 10 in Phase 6** via CLV.
+- **Cold-start shrinkage — RESOLVED 2026-07-27: `shrinkage_n0 = 0`.** Original rationale: thin favorites
+  measured ~+8pt overconfident vs outcomes, and shrinkage calibrated them without under-valuing
+  breakouts. But the "revisit n0=0 vs 10 in Phase 6" item is now settled directly — with the scale
+  fitted on TRAIN only, **n0=0 beats 5 and 10 on both Brier and log-loss for both tours, monotone in
+  n0**. Thin players are handled by the `thin_matches` **abstain** (added in Phase 7), which makes
+  shrinkage redundant. See **"Underdog over-rating"** for the numbers.
 - **Breakout thesis (evaluated).** Hypothesis: markets underprice hot young players → edge. Against
   the sharp close it is FALSE/inverted — thin/breakout players are our *worst* segment (the market
   prices them better than our Elo). Unresolved vs Kalshi at the current tiny sample. Revisit via the
@@ -177,6 +179,62 @@ Before any real money we test edge vs the market (not just calibration vs outcom
   Sackmann's Match Charting Project* = shot-by-shot point-level data (~5k+ curated matches, CC
   BY-NC-SA) — not match results; useless for v1/market-beating, but the best data to calibrate the
   **v2** serve/return point-by-point Markov model (parked with the TML serve stats).
+
+## Underdog over-rating — the first-order defect (2026-07-27)
+
+**The model over-rates the market underdog by +4.3pp overall — 7.0 SEs from zero — while the market
+is calibrated (+0.5pp).** Measured vig-free (model vs the *Shin-devigged* close, oriented to the
+market underdog, n=5,705 held-out 2025-26), so it is not a vig or flat-staking artifact. It worsens as
+the underdog gets cheaper:
+
+| underdog price | n | model bias | market bias |
+|---|---|---|---|
+| <15¢ | 595 | **+5.5pp** | −0.7pp |
+| 15–25¢ | 974 | **+7.6pp** | +1.5pp |
+| 25–35¢ | 1504 | +4.2pp | +0.1pp |
+| 35–45¢ | 1867 | +2.9pp | +0.1pp |
+| 45–50¢ | 756 | +2.3pp | +1.6pp |
+
+This is the mechanism behind the alert profile: **70% of bets land on the underdog side** (median bet
+price 0.388) and the model leans toward the market underdog in **66% of all matches**. Unlike the
+layoff finding below, this is large, monotone, vig-free, and well-powered.
+
+**What it is NOT.** (1) *Not shrinkage* — a train-only-fitted sweep over `shrinkage_n0` ∈ {0,5,10}
+moved the bias only +0.0428 → +0.0406, i.e. ~5% of it. (2) *Not an under-fitted scale* —
+`build_ratings.py` fits `fit_scale` by log-loss over the **whole** record set, so the shipped scale is
+already log-loss-optimal; the bias survives it. A single global logistic scale calibrated against
+*outcomes* simply cannot correct a bias conditional on the *market price*, which the model never sees.
+
+**What it IS:** structural **under-dispersion** — Elo rating differences are compressed relative to
+true skill differences, worst in the tails. The honest fix is a better model (serve/return, v2), not a
+parameter.
+
+**Why we can't recalibrate it away honestly:** `data/odds/` covers only 2025-26, which *is* the
+evaluation window. Fitting any market-conditional correction there would burn the only clean test set.
+
+**What was done instead:**
+- **`shrinkage_n0` 10 → 0.** Justified independently of the bias: with the scale fitted on TRAIN only
+  (≤2024) and evaluated on held-out 2025+, n0=0 beats 5 and 10 on **both** Brier and log-loss for
+  **both** tours, monotone in n0 (ATP 0.21695/0.62152 vs 0.21788/0.62364; WTA 0.21557/0.61875 vs
+  0.21624/0.62032). This resolves the Phase-2 open item ("revisit n0=0 vs 10 in Phase 6"). Thin players
+  are already handled by the `thin_matches` **abstain**, so shrinkage was doing redundant work.
+  Note honestly: n0=0 gives better calibration and slightly *worse* backtest ROI (−11.8% vs −11.0%) —
+  better probabilities did not buy better betting, exactly as `w*`=0.000 predicts.
+- **`min_price` 0.10 → 0.20.** A **symptomatic gate**, not a fix: it declines the band where the model
+  is least trustworthy. Costs ~11% of alert volume (the pre-existing 0.10 floor was already blocking
+  208 bets at −23.8% ROI, so the true live baseline was −10.30%, not −10.96%). The threshold is a
+  **judgment call** justified by the bias table above, not optimised — backtest ROI is non-monotone
+  past 0.20 (0.20 → −8.87%, 0.25 → −8.89%, 0.30 → −9.51%), which is tail noise, and 0.25 is equally
+  supported by the evidence. Revisit via forward CLV segmented by price band.
+
+**Methodological note (affects the backtest, not production):** `backtest_vs_bookmaker.py` loads
+`model.json`'s scales, which were fitted over the full record set *including* 2025-26 — so the shipped
+backtest is mildly optimistic. Fitting on all data is correct for *production*; the train/test split
+belongs in the evaluation. The sweep above avoided this by fitting on train only.
+
+**Implication.** With `w*`=0.000 and the model's disagreements with the close systematically wrong in a
+predictable direction, this is the strongest evidence yet that **v1's ceiling is low**. The forward
+paper test remains the arbiter, but do not expect a pre-match results-only Elo to beat a sharp line.
 
 ## Layoff / inactivity — measured, decay NOT built (2026-07-27)
 

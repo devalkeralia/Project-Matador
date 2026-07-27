@@ -66,6 +66,17 @@ def test_min_price_floor_blocks_a_longshot():
     assert evaluate_market(0.30, 0.06, 0.94, _cfg(min_price=0.10)) is None
 
 
+def test_min_price_default_blocks_the_15c_band():
+    # The default floor is 0.20 as of 2026-07-27: the 15-25c band carries the model's WORST
+    # underdog over-rating (+7.2pp vig-free), so a 15c side must not alert under the default,
+    # while a 25c side with the same edge still does.
+    from matador.config import Config
+    cfg = Config(bankroll=1000.0, min_liquidity=10.0, max_spread=0.10)
+    assert cfg.min_price == 0.20
+    assert evaluate_market(0.40, 0.15, 0.85, cfg) is None
+    assert evaluate_market(0.50, 0.25, 0.75, cfg) is not None
+
+
 def test_kelly_fraction_override_haircuts_the_stake():
     cfg = _cfg()
     full = evaluate_market(0.60, 0.45, 0.55, cfg)

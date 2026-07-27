@@ -21,7 +21,10 @@ def test_valid_config_loads_with_defaults():
     assert cfg.tours == ["ATP", "WTA"]
     assert cfg.series.atp == "KXATPMATCH"
     assert cfg.series.wta is None
-    assert cfg.min_price == 0.10  # favorite floor on by default (blocks deep longshots)
+    # Favorite floor on by default. 0.20 (raised from 0.10 on 2026-07-27) because the model
+    # over-rates the market underdog by +4.3pp overall / +7.2pp at 15-25c -- the cheapest alerts
+    # are the least trustworthy (DESIGN-DECISIONS "Underdog over-rating").
+    assert cfg.min_price == 0.20
 
 
 def test_rejects_nonpositive_bankroll():

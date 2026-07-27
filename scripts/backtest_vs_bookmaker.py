@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx  # noqa: E402
 import pandas as pd  # noqa: E402
 
-from matador.backtest import devig_shin, replay_predictions, roi_by_experience, sharpness, tennisdata_key  # noqa: E402
+from matador.backtest import _IDLE_BUCKETS, devig_shin, replay_predictions, roi_by_experience, roi_by_idle, sharpness, tennisdata_key  # noqa: E402
 from matador.config import load_config  # noqa: E402
 from matador.model.elo import KFactor  # noqa: E402
 from matador.sackmann import load_matches  # noqa: E402
@@ -90,8 +90,8 @@ def main() -> None:
     years = range(int(sys.argv[1]) if len(sys.argv) > 2 else 2025, (int(sys.argv[2]) if len(sys.argv) > 2 else 2026) + 1)
     k = KFactor(e.k_num, e.k_shift, e.k_pow)
 
-    diag_rows: list[tuple] = []   # (p_model_winner, p_market_winner, tier)
-    bets: list[tuple] = []         # (tour, n_bet, pnl, tier)
+    diag_rows: list[tuple] = []   # (p_model_winner, p_market_winner, tier, idle_max)
+    bets: list[tuple] = []         # (tour, n_bet, pnl, tier, idle_bet)
     joined = eligible = 0
     for tour in ("atp", "wta"):
         try:
@@ -114,17 +114,19 @@ def main() -> None:
             if abs((date - p.date).days) > 3:
                 continue
             joined += 1
-            diag_rows.append((p.p_a, qw, tier))
+            # idle_max = the longer of the two layoffs: either player's frozen rating distorts the diff
+            idles = [i for i in (p.idle_a, p.idle_b) if i is not None]
+            diag_rows.append((p.p_a, qw, tier, max(idles) if idles else None))
             # bet the higher-edge side (gross edge vs Shin fair prob; flat $1 P&L at ACTUAL vigged odds)
             edge_w, edge_l = p.p_a - qw, (1 - p.p_a) - (1 - qw)
             if max(edge_w, edge_l) >= cfg.min_net_edge:
                 if edge_w >= edge_l:
-                    bets.append((tour, p.n_a, aw - 1.0, tier))       # back winner at actual odds -> won
+                    bets.append((tour, p.n_a, aw - 1.0, tier, p.idle_a))   # back winner at actual odds -> won
                 else:
-                    bets.append((tour, p.n_b, -1.0, tier))            # back loser -> lost
+                    bets.append((tour, p.n_b, -1.0, tier, p.idle_b))       # back loser -> lost
 
     print(f"eligible held-out predictions: {eligible:,} | joined to bookmaker odds: {joined:,}\n")
-    d = pd.DataFrame(diag_rows, columns=["p_model", "p_market", "tier"])
+    d = pd.DataFrame(diag_rows, columns=["p_model", "p_market", "tier", "idle_max"])
     s = sharpness(d.p_model.tolist(), d.p_market.tolist())
     print(f"=== model vs bookmaker CLOSE (winner-side, n={s.get('n', 0):,}) ===")
     if s.get("n"):
@@ -137,10 +139,27 @@ def main() -> None:
             st = sharpness(grp.p_model.tolist(), grp.p_market.tolist())
             print(f"    {str(tier):<16} n={st['n']:>5}  model={st['brier_model']:.4f}  market={st['brier_market']:.4f}  w*={st['blend_w_star']:.2f}")
 
-    b = pd.DataFrame(bets, columns=["tour", "n_bet", "pnl", "tier"])
+    # Layoff: Elo applies NO time decay, so a rating is frozen across time off court. If a frozen
+    # rating is the defect it looks like live, model Brier should degrade and ROI should fall as the
+    # layoff grows -- and where it breaks is where max_staleness_days belongs.
+    if not d.empty and d.idle_max.notna().any():
+        print("  by LAYOFF, longer of the two players (Brier model vs market, blend w* on model):")
+        for lo, hi, lab in _IDLE_BUCKETS:
+            grp = d[(d.idle_max >= lo) & (d.idle_max < hi)]
+            if grp.empty:
+                continue
+            st = sharpness(grp.p_model.tolist(), grp.p_market.tolist())
+            gap = st["brier_model"] - st["brier_market"]
+            print(f"    {lab:<16} n={st['n']:>5}  model={st['brier_model']:.4f}  market={st['brier_market']:.4f}"
+                  f"  gap={gap:>+.4f}  w*={st['blend_w_star']:.2f}")
+
+    b = pd.DataFrame(bets, columns=["tour", "n_bet", "pnl", "tier", "idle_bet"])
     print(f"\n=== flat-stake backtest (>= {cfg.min_net_edge:.0%} edge; vs vigged decimal odds, no Kalshi fee) ===")
     print("  by experience:")
     for lab, n, roi, pnl in roi_by_experience(b):
+        print(f"    {lab:<22} bets={n:>5}  ROI={roi:>+7.1%}  pnl={pnl:>+8.1f}u")
+    print("  by LAYOFF of the BET player (days since their previous match):")
+    for lab, n, roi, pnl in roi_by_idle(b):
         print(f"    {lab:<22} bets={n:>5}  ROI={roi:>+7.1%}  pnl={pnl:>+8.1f}u")
     if not b.empty:
         print("  by tier (the liquid Slams/Masters are where we'd actually trade):")

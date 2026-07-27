@@ -28,6 +28,11 @@ class Prediction:
     n_a: int     # winner's prior-match count as of the match (for experience segmenting)
     n_b: int     # loser's prior-match count as of the match
     p_a: float   # model P(winner beats loser)
+    # Days since each player's PREVIOUS match, as of this match (None = no prior match on record).
+    # Elo applies no time decay, so a rating is frozen across a layoff; these let the backtest
+    # measure how stale a frozen rating actually is (segmenting ROI/Brier by layoff length).
+    idle_a: int | None = None
+    idle_b: int | None = None
 
 
 def replay_predictions(
@@ -54,15 +59,23 @@ def replay_predictions(
         nw, nl = book.overall_count(w), book.overall_count(l)
         d = row.tourney_date
         yr = d.year if hasattr(d, "year") else int(str(d)[:4])
+        md = d.date() if hasattr(d, "date") else d
         if bo in (3, 5) and nw >= min_matches and nl >= min_matches and yr >= holdout_from_year:
             p = prob_from_diff(
                 blended_rating(book, w, surf, surface_weight, shrinkage_n0=shrinkage_n0)
                 - blended_rating(book, l, surf, surface_weight, shrinkage_n0=shrinkage_n0),
                 scales[bo],
             )
+            # Idle days read BEFORE book.update, so this is prior-match state only (no lookahead).
+            last_w, last_l = book.last_played(w), book.last_played(l)
             # key off the player NAME (what the market-side join canonicalizes), not the opaque id
-            out.append(Prediction(pd.Timestamp(d), canonical_key(str(row.winner_name)), canonical_key(str(row.loser_name)), nw, nl, p))
-        book.update(w, l, surf, d.date() if hasattr(d, "date") else d)
+            out.append(Prediction(
+                pd.Timestamp(d), canonical_key(str(row.winner_name)), canonical_key(str(row.loser_name)),
+                nw, nl, p,
+                idle_a=(md - last_w).days if last_w is not None else None,
+                idle_b=(md - last_l).days if last_l is not None else None,
+            ))
+        book.update(w, l, surf, md)
     return out
 
 
@@ -142,4 +155,28 @@ def roi_by_experience(bets: pd.DataFrame, buckets=_DEFAULT_BUCKETS) -> list[tupl
     out = [row("overall", bets)]
     for lo, hi, lab in buckets:
         out.append(row(lab, bets[(bets.n_bet >= lo) & (bets.n_bet < hi)]))
+    return out
+
+
+# Layoff buckets in days. Elo never decays a rating, so these measure how wrong a frozen rating
+# gets as time off court grows. 365 is the live `max_staleness_days` cliff -- the last two buckets
+# straddle it, which is what tells us whether that threshold sits in the right place.
+_IDLE_BUCKETS = (
+    (0, 14, "fresh <14d"), (14, 30, "[14,30)d"), (30, 60, "[30,60)d"),
+    (60, 90, "[60,90)d"), (90, 180, "[90,180)d"), (180, 365, "[180,365)d"),
+    (365, 10**9, "layoff 365d+"),
+)
+
+
+def roi_by_idle(bets: pd.DataFrame, buckets=_IDLE_BUCKETS) -> list[tuple]:
+    """bets needs columns `idle_bet` (days since the BET player's previous match) and `pnl`.
+    Returns [(label, n, roi, total_pnl)], overall first then per layoff bucket. Rows with an
+    unknown idle (no prior match on record) are excluded from the buckets but kept in overall."""
+    def row(label, s):
+        return (label, len(s), float(s.pnl.mean()) if len(s) else 0.0, float(s.pnl.sum()))
+
+    out = [row("overall", bets)]
+    known = bets[bets.idle_bet.notna()]
+    for lo, hi, lab in buckets:
+        out.append(row(lab, known[(known.idle_bet >= lo) & (known.idle_bet < hi)]))
     return out

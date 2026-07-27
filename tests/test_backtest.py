@@ -1,7 +1,9 @@
+from datetime import date
+
 import pandas as pd
 import pytest
 
-from matador.backtest import de_vig, devig_shin, replay_predictions, roi_by_experience, sharpness, tennisdata_key
+from matador.backtest import de_vig, devig_shin, replay_predictions, roi_by_experience, roi_by_idle, sharpness, tennisdata_key
 from matador.names import canonical_key
 
 
@@ -71,6 +73,39 @@ def test_replay_predictions_holdout_and_no_lookahead():
     both = replay_predictions(df, surface_weight=0.7, scales=scales, min_matches=0, shrinkage_n0=0.0, holdout_from_year=2024)
     assert len(both) == 2
     assert both[0].p_a == pytest.approx(0.5) and both[0].n_a == 0
+
+
+def test_replay_predictions_idle_days_are_prior_state_only():
+    # P One plays 2024-01-01, then again 2025-06-01 (517d later); P Two plays 2024-01-01 and
+    # 2025-03-01, so by 2025-06-01 P Two has been idle 92d. Both read from the PREVIOUS match,
+    # never the current one -- an idle of 0 would mean book.update ran before the read.
+    df = _matches([
+        [pd.Timestamp("2024-01-01"), 1, "F", "Hard", 3, 1, "P One", 2, "P Two", "6-4 6-4"],
+        [pd.Timestamp("2025-03-01"), 1, "F", "Hard", 3, 2, "P Two", 3, "P Three", "6-4 6-4"],
+        [pd.Timestamp("2025-06-01"), 1, "F", "Hard", 3, 1, "P One", 2, "P Two", "6-4 6-4"],
+    ])
+    scales = {3: 400.0, 5: 400.0}
+    preds = replay_predictions(df, surface_weight=0.7, scales=scales, min_matches=0,
+                              shrinkage_n0=0.0, holdout_from_year=2025)
+    last = preds[-1]
+    assert last.date == pd.Timestamp("2025-06-01")
+    assert last.idle_a == (date(2025, 6, 1) - date(2024, 1, 1)).days   # 517
+    assert last.idle_b == (date(2025, 6, 1) - date(2025, 3, 1)).days   # 92
+    # first-ever appearance has no prior match to measure from
+    first = replay_predictions(df, surface_weight=0.7, scales=scales, min_matches=0,
+                              shrinkage_n0=0.0, holdout_from_year=2024)[0]
+    assert first.idle_a is None and first.idle_b is None
+
+
+def test_roi_by_idle_segments_and_ignores_unknown_idle():
+    bets = pd.DataFrame(
+        [(5, 1.0), (400, -1.0), (400, -1.0), (None, 3.0)],
+        columns=["idle_bet", "pnl"],
+    )
+    rows = dict((label, (n, roi, pnl)) for label, n, roi, pnl in roi_by_idle(bets))
+    assert rows["overall"] == (4, pytest.approx(0.5), pytest.approx(2.0))
+    assert rows["fresh <14d"] == (1, pytest.approx(1.0), pytest.approx(1.0))
+    assert rows["layoff 365d+"] == (2, pytest.approx(-1.0), pytest.approx(-2.0))
 
 
 def test_roi_by_experience_segments():

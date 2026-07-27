@@ -58,3 +58,23 @@ def test_clv_report_segments_match_manual_summarize():
     caps = summarize(bets, cfg)["captures"]
     assert caps == {"auto": 2, "manual": 1, "sharp_only": 0, "missed": 1}
     conn.close()
+
+
+def test_clv_report_segments_by_layoff_in_reading_order():
+    """The layoff axis is the pre-registered decay instrument, so it must bucket by staleness and
+    stay in ascending order (an unordered axis makes a trend unreadable)."""
+    mod = _load()
+    conn = connect(":memory:")
+    init_db(conn)
+    base = dict(ts="2026-08-05T12:00:00Z", trigger_reason="prematch_value",
+                occurrence_datetime="2026-08-05T13:00:00Z", experience=100)
+    for ticker, stale in (("F", 2), ("R", 20), ("L", 40), ("X", 400), ("U", None)):
+        oid = insert_opportunity(conn, tour="ATP", market_ticker=ticker, side="yes", price=0.50,
+                                 p_model=0.6, net_edge=0.05, staleness=stale, **base)
+        record_outcome(conn, oid, closing_price=0.55, closing_source="auto")
+
+    segs = mod.segment_summaries(settled_bets(conn), _cfg())["staleness"]
+    assert [label for label, _ in segs] == mod._STALENESS_ORDER   # ascending, unknown last
+    assert dict(segs)["layoff(60d+)"]["n_clv"] == 1               # the 400d row
+    assert dict(segs)["unknown"]["n_clv"] == 1                    # pre-instrumentation rows still reported
+    conn.close()

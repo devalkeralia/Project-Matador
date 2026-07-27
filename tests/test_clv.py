@@ -47,7 +47,7 @@ def _bet(**o):
     f = dict(price=0.50, fill_price=None, closing_price=None, closing_source=None,
              sharp_close=None, sharp_source=None, result=None,
              contracts_filled=None, occurrence_datetime="2026-07-13T13:00:00Z",
-             ts="2026-07-13T12:00:00Z", experience=100)
+             ts="2026-07-13T12:00:00Z", experience=100, staleness=3)
     f.update(o)
     return f
 
@@ -118,6 +118,28 @@ def test_summarize_consensus_does_not_gate_but_is_reported():
     assert con["n_sharp"] == 0 and con["go_live"] is False        # consensus alone never satisfies the gate
     pin = summarize(sample("pinnacle"), _cfg(), seed=0)
     assert pin["n_sharp"] == 240 and pin["go_live"] is True
+
+
+def test_summarize_segments_sharp_clv_by_staleness():
+    # The pre-registered decay instrument: layoff segmentation must be on the SHARP (binding) track.
+    # Fresh rows beat the sharp close (+8c before fee); the layoff rows lose to it (-8c).
+    fresh = [_bet_in_week(i % 4, price=0.70, sharp_close=0.78, sharp_source="pinnacle",
+                          closing_source="auto", staleness=2) for i in range(6)]
+    stale = [_bet_in_week(i % 4, price=0.70, sharp_close=0.62, sharp_source="pinnacle",
+                          closing_source="auto", staleness=95) for i in range(4)]
+    s = summarize(fresh + stale, _cfg(), seed=0)
+    seg = s["sharp_by_staleness"]
+    assert seg["fresh(<14d)"]["n"] == 6 and seg["fresh(<14d)"]["mean_sharp_clv"] > 0
+    assert seg["layoff(60d+)"]["n"] == 4 and seg["layoff(60d+)"]["mean_sharp_clv"] < 0
+    assert "recent(14-29d)" not in seg and "layoff(30-59d)" not in seg   # no empty buckets emitted
+
+
+def test_summarize_staleness_segmentation_handles_unknown():
+    # pre-instrumentation rows (staleness NULL) must bucket as 'unknown', not crash or count as fresh
+    bets = [_bet_in_week(0, price=0.70, sharp_close=0.78, sharp_source="pinnacle",
+                         closing_source="auto", staleness=None)]
+    seg = summarize(bets, _cfg(), seed=0)["sharp_by_staleness"]
+    assert seg["unknown"]["n"] == 1 and "fresh(<14d)" not in seg
 
 
 def test_summarize_sharp_only_rows_count_toward_coverage_not_missed():

@@ -50,6 +50,12 @@ class WinProbability:
     p: float | None   # P(player_a wins), or None when abstaining
     reason: str       # "ok", or the abstain reason
     experience: int | None = None  # min prior-match count of the two players (thin-player flag/segmentation)
+    # MAX days since either player last played. Elo applies no time decay, so a rating is frozen
+    # across a layoff; logging this lets the forward sharp-CLV segment by it. Backtesting could not
+    # settle whether layoff actually costs money (real in probability space, but ~0.7 ROI points and
+    # confounded with round -- see DESIGN-DECISIONS "Layoff / inactivity"), so this is INSTRUMENTATION
+    # only: nothing reads it to make a decision.
+    staleness: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -90,11 +96,19 @@ def win_probability(
             if last is None or (as_of - last).days > max_staleness_days:
                 return WinProbability(None, "stale_ratings")
 
+    # Layoff of the STALER of the two players. Needs as_of; None when the caller has no date
+    # (the gate above is what fails closed -- this is only for logging/segmentation).
+    staleness = None
+    if as_of is not None:
+        idles = [(as_of - last).days for last in (book.last_played(player_a), book.last_played(player_b))
+                 if last is not None]
+        staleness = max(idles) if idles else None
+
     diff = (
         blended_rating(book, player_a, surface, surface_weight, shrinkage_n0=shrinkage_n0)
         - blended_rating(book, player_b, surface, surface_weight, shrinkage_n0=shrinkage_n0)
     )
-    return WinProbability(prob_from_diff(diff, scale), "ok", experience=min(na, nb))
+    return WinProbability(prob_from_diff(diff, scale), "ok", experience=min(na, nb), staleness=staleness)
 
 
 def resolve_player(

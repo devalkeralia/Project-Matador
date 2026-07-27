@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
     occurrence_datetime TEXT,   -- scheduled match time; Phase 5/6 uses it to fetch the closing line for CLV
     flagged INTEGER DEFAULT 0,  -- adverse-selection: net edge >= adverse_gap (possible late news)
     experience INTEGER,         -- min prior-match count of the two players (thin-player flag + CLV segmentation)
+    staleness INTEGER,          -- max days since either player last played (layoff CLV segmentation; instrumentation only)
     score_state TEXT
 );
 
@@ -64,6 +65,7 @@ _OPPORTUNITY_COLUMNS = (
     "occurrence_datetime",
     "flagged",
     "experience",
+    "staleness",
     "score_state",
 )
 
@@ -77,6 +79,7 @@ _MIGRATIONS = {
     "opportunities": {
         "event_ticker": "TEXT", "market_player": "TEXT", "occurrence_datetime": "TEXT",
         "flagged": "INTEGER DEFAULT 0", "experience": "INTEGER", "opponent": "TEXT",
+        "staleness": "INTEGER",
     },
     "outcomes": {
         "closing_captured_at": "TEXT", "closing_source": "TEXT",

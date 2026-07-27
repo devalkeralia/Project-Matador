@@ -27,7 +27,7 @@ with ISO-week BCa CI, realized-ROI + capture-health + sharp-coverage co-gates, t
 and flat paper stakes. What remains is the paper run itself (live-verified at the August Masters when
 odds post). **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-27_
 
 ## What this is
 
@@ -157,6 +157,35 @@ markets where the gate thresholds are meaningful.
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
+
+- **2026-07-27 — Refresh pipeline repaired; layoff measured, decay NOT built; 277 tests.** Three
+  independent findings while preparing the paper test:
+  - **The weekly model refresh was silently broken.** Upstream (LuckyLoser91) moved its CSVs to **Git
+    LFS**, so `raw.githubusercontent.com` began serving 131-byte pointer stubs — and `fetch()` treated
+    any 200-with-content as success, overwriting good archives (it destroyed 59 ATP year files on the
+    first run; re-fetched and restored). Now fetches via `media.githubusercontent.com/media/` (resolves
+    LFS) and **validates before overwriting** — an LFS pointer, a changed column schema, or an HTML error
+    page leaves the existing archive alone and warns. Left unfixed, the deployed cron would have kept
+    "succeeding" weekly while the model froze forever.
+  - **Future-date guard:** one WTA row was dated **2029**-07-20 (upstream year typo), which would give
+    both players a last-played date in the future and permanently exempt them from the staleness gate.
+    Dropped with a logged warning. Both tours refreshed through 2026-07-19.
+  - **Layoff: real but not actionable → instrumentation, not decay.** Elo applies no time decay, so a
+    rating is frozen across a layoff, and live scanning surfaced big edges on returning veterans
+    (Nishikori +23% at 353d idle). Measured it (idle-days segmentation in `backtest_vs_bookmaker.py`,
+    no-lookahead-tested) and stress-tested with 5 lenses + an adversarial pass: the effect is genuine in
+    probability space (~2pp over-rating per log-day; the *market* prices layoff, we don't) but the ROI
+    panel is **noise** (nothing survives Holm/BH), the `365d+ = +32%` reversal is **one bet**, `idle` is
+    collinear with **round**, the losses are **symmetric** across both sides of a stale match, and the
+    whole prize is **<1 ROI point**. So decay was **not** built. Instead: `staleness` is logged per alert
+    and the sharp-CLV report gains a **layoff axis**, converting an underpowered backtest question into a
+    forward sharp-CLV one — with **pre-registered** criteria and a pre-committed one-sided form so it
+    can't be re-fitted later. `max_staleness_days` stays **365** (no threshold buys a measurable gain;
+    T=60 would cut 28.4% of January alerts). Also: decay cannot fix the *Venus* case (her rating error is
+    flat in idle) — that's the unfloored **K**, logged as the stronger deferred hypothesis.
+    See DESIGN-DECISIONS **"Layoff / inactivity"**.
+  - Sharp slugs re-verified live: all **43/43** the-odds-api tennis keys reachable, zero drift, and the
+    sharp path verified end-to-end against Pinnacle three weeks early (added the missing `washington` key).
 
 - **2026-07-16 — P7-E review-hardening (independent Fable-5 review → fixes); 266 tests.** A fresh-model
   adversarial review found the sharp *math* sound but 6 capture-path/gate-composition defects; fixed all

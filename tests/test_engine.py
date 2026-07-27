@@ -150,7 +150,7 @@ def _opp(**overrides) -> Opportunity:
         market_player="Player Aaa", opponent="Player Bbb", side="yes", price=0.50,
         p_model=0.60, net_edge=0.08, suggested_stake=40.0, contracts=80, liquidity=50.0,
         trigger_reason="prematch_value", occurrence_datetime="2026-07-04T13:00:00Z", flagged=False,
-        experience=100, score_state=None,
+        experience=100, staleness=3, score_state=None,
     )
     fields.update(overrides)
     return Opportunity(**fields)

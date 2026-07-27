@@ -178,6 +178,77 @@ Before any real money we test edge vs the market (not just calibration vs outcom
   BY-NC-SA) — not match results; useless for v1/market-beating, but the best data to calibrate the
   **v2** serve/return point-by-point Markov model (parked with the TML serve stats).
 
+## Layoff / inactivity — measured, decay NOT built (2026-07-27)
+
+Elo applies **no time decay**: a rating is frozen while a player is off court, and K = 250/(n+5)^0.4
+*shrinks* with career match count, so the players most likely to be declining adapt slowest
+(Venus Williams K=15.2 at n=1091; a loss moves her ~7 Elo). Live scanning surfaced large edges on
+exactly that population (Nishikori +23% at 353 days idle, Venus, Storm Hunter), so we measured it:
+added `idle_a/idle_b` to `backtest.Prediction` (read before `book.update` — no lookahead, tested) and
+segmented ROI/Brier by layoff, then stress-tested with 5 independent analyses + an adversarial pass.
+
+**Verdict: the effect is REAL in probability space but NOT actionable. Decay was not built.**
+- **Real:** the model over-rates the idle side ~2pp per log-day (p=0.018); entering both players'
+  idle separately gives equal-and-opposite coefficients (−0.0216 / +0.0223, both p=0.010) — the
+  "whoever is idle is over-rated" signature. The **market prices layoff and we don't** (market
+  coefficient p=0.73), so it's a model deficiency, not an inefficiency to harvest.
+- **Not actionable:** (1) the bucketed ROI panel is noise — nothing survives Holm/BH (min adjusted
+  p=0.60), and the MDE at 80% power is 31–74 ROI points against observed gaps of 8–16;
+  (2) the apparent `365d+ = +32.2%` "reversal" is **one bet** (Venus at 10.69 odds = +9.69u of the
+  bucket's +9.02u total; drop it → −2.5%); (3) `idle` is nearly collinear with **round**
+  (Spearman −0.81; 89% of idle≥30 matches are first-round), so the "fresh" baseline is mostly
+  *players who won here two days ago* — controlling for round halves the effect to p=0.17;
+  (4) **the losses are symmetric** — betting the *fresh* side against a stale opponent loses
+  −15.5% vs −16.8% for the stale side, so decay would shift volume between two losing sides, not
+  remove them; only abstention removes both; (5) the whole prize is **<1 ROI point** in-sample and
+  worse out-of-sample, with `w*` pinned at 0.000 at every decay magnitude 25–200 Elo;
+  (6) the functional form is **unidentified** — three lenses produced three incompatible best fits
+  and τ is flat from 75d to 500d.
+- **Measurement caveat:** the rating stream is main-draw only, so a match-fit Challenger player
+  registers as a 90-day layoff. "Idle" means absent from *this dataset*, not from tennis.
+
+**`max_staleness_days` stays 365.** Re-run with the gate's real semantics (abstain if *either*
+player is stale) no threshold buys a measurable gain — T=90 is exactly 0.00 ROI points, and the
+slices gated out at T=120/180 are in-sample *profitable* (the same lottery tickets). T=60 would cut
+8.1% of alerts including **28.4% of January alerts** (post-off-season gaps of healthy players
+dominate the 60–180d band), trading measurable sample for an unmeasurable ROI point. Note it is
+nearly **inert** as configured (0.8% of alerts; 20 roster players sit at idle 300–365d, Nishikori at
+353d among them) — it is a backstop against ratings with no recent anchor, **not** a calibration
+control, and must not be described as protection against stale ratings.
+
+**Instead: instrumentation.** `WinProbability.staleness` → `Opportunity` → `opportunities.staleness`
+→ a layoff axis in `clv_report.py` and `sharp_by_staleness` in `clv.summarize`. Costs no alert
+volume, needs no fitted parameter, and converts an underpowered backtest-ROI question into a forward
+**sharp-CLV** question — the instrument that actually binds the go-live gate. Nothing reads it to
+make a decision.
+
+**PRE-REGISTERED decay criteria** (fixed now so it cannot be re-fitted post hoc). Ship decay only if
+**all** hold after the paper test: (a) sharp-net-CLV on the idle≥30d segment is negative with a 95%
+CI excluding zero, on ≥60 bets across ≥8 week clusters; (b) it is separated from the idle<30d
+segment by a CI excluding zero; (c) the separation survives restriction to first-round matches (the
+round confound). The pre-committed form is then the simplest the evidence supports — a one-parameter
+step reusing the shrinkage path, **one-sided (clamped so it can only lower a rating**; a raw shrink
+toward 1500 would *boost* a returning weak player, which is backwards for an injury comeback):
+
+    if staleness_days >= 30: blended = initial + 0.87 * (blended - initial)
+
+(0.13 haircut ≈ −59 Elo at 1950, inside the measured −44/−87 Elo band at 30–60d, deliberately
+conservative: the coefficient roughly halves between 2025 and 2026 H1, measurement error inflates
+it, and first-round-only subsetting halves it again.) Held-out Brier/log-loss must improve with a
+consistent sign across all four splits (ATP↔WTA, 2025↔2026) and ROI must not degrade. **Do not
+touch `p_model` during the paper run** — any mid-run change invalidates the accumulated sample.
+
+**Deferred, stronger hypothesis — a K floor (the actual "Venus" fix).** Decay cannot fix Venus:
+her implied-Elo error is **flat in idle** (+310 at ≤14d vs +332 at ≥30d), and the pre-committed
+decay applies 0 Elo at her 27 days. Her problem is the unfloored K. Restricted to *fresh* players,
+implied-Elo error by experience is −32.7 (n 20–100) → +16.0 (500–800) → **+123.6 (n≥800, all 9/9
+players positive:** Djokovic +116, Wawrinka +133, Venus +315, Kvitová +341), while the active elite
+are *under*-rated (Medvedev −26, Sabalenka −28, de Minaur −72) — a **bidirectional** failure to track
+change, ~4× the layoff slice's +25/+29 Elo. Stronger evidence than decay, but it rests on 140 rows /
+9 players, cannot be separated from age (no birthdates in the data), and needs a walk-forward
+rebuild. Gate it on held-out log-loss via the existing calibration harness; do not bundle it with
+anything else; and do not let it delay the August sharp-path verification.
+
 ## Model complexity — statistical baseline first; ML/LLM staged and evidence-gated
 
 **Decision:** start with the transparent statistical model (surface-weighted Elo →

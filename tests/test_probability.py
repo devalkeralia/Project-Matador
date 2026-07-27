@@ -72,6 +72,28 @@ def test_win_probability_abstains_on_stale_ratings():
     assert r.p is None and r.reason == "stale_ratings"
 
 
+def test_win_probability_reports_staleness_of_the_staler_player():
+    # Both players last played 2024-01-01; player 2 then plays again on 2024-05-01, so as of
+    # 2024-06-01 the LONGER layoff is player 1's (152d) -- staleness must report the max, since
+    # either player's frozen rating distorts the rating difference.
+    book = _seasoned_book()
+    book.update(2, 997_001, "Hard", date(2024, 5, 1))
+    r = win_probability(
+        book, 1, 2, "Hard", 3, surface_weight=0.7, scales={3: 400.0, 5: 400.0},
+        min_matches=20, max_staleness_days=365, as_of=date(2024, 6, 1),
+    )
+    assert r.ok
+    assert r.staleness == (date(2024, 6, 1) - date(2024, 1, 1)).days   # 152, not player 2's 31
+
+
+def test_win_probability_staleness_is_none_without_as_of():
+    # No as_of -> no date to measure against. The staleness GATE fails closed separately; this
+    # field is instrumentation, so it reports unknown rather than fabricating a 0.
+    book = _seasoned_book()
+    r = win_probability(book, 1, 2, "Hard", 3, surface_weight=0.7, scales={3: 400.0, 5: 400.0}, min_matches=20)
+    assert r.ok and r.staleness is None
+
+
 def test_resolve_player():
     index = {
         "sinner_j": {100: PlayerInfo(100, "Jannik Sinner", date(2024, 6, 1), 40)},

@@ -104,6 +104,24 @@ def _experience_bucket(exp, thin: int) -> str:
     return f"established({_ESTABLISHED}+)"
 
 
+# Layoff buckets for the CLV segmentation. The 30d boundary is the pre-registered decision point:
+# backtesting found the model over-rates a laid-off player in probability space but could NOT show
+# it costs money (~0.7 ROI pts, confounded with round, and betting the FRESH side of a stale match
+# loses just as much) -- so decay was NOT built, and this segmentation is the instrument that
+# decides it on the forward sharp close instead. See DESIGN-DECISIONS "Layoff / inactivity".
+_STALENESS_BUCKETS = ((0, 14, "fresh(<14d)"), (14, 30, "recent(14-29d)"),
+                      (30, 60, "layoff(30-59d)"), (60, 10**9, "layoff(60d+)"))
+
+
+def _staleness_bucket(stale) -> str:
+    if stale is None:
+        return "unknown"
+    for lo, hi, lab in _STALENESS_BUCKETS:
+        if lo <= stale < hi:
+            return lab
+    return "unknown"
+
+
 def summarize(bets, cfg, *, seed: int = 0) -> dict:
     """Aggregate settled_bets rows into the /stats figures: hit rate, net P&L / ROI, two CLV tracks
     (vs Kalshi's own close -- INFORMATIONAL; vs the SHARP Pinnacle close -- the BINDING gate metric,
@@ -114,8 +132,8 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
     bets, enough week-clusters, sharp_coverage (pinnacle / any-closed) >= min_sharp_coverage, realized
     net-ROI >= 0, and a missed-capture rate within max_missed_capture_rate."""
     fee = cfg.fee_coefficient
-    rows = []            # (net_clv, gross_clv, week, experience) per Kalshi-CLV-eligible bet
-    pinnacle_rows = []   # (sharp_net_clv, week) per bet with a PINNACLE ref -- the BINDING gate track
+    rows = []            # (net_clv, gross_clv, week, experience, staleness) per Kalshi-CLV-eligible bet
+    pinnacle_rows = []   # (sharp_net_clv, week, staleness) per bet with a PINNACLE ref -- the BINDING gate track
     consensus_rows = []  # ... with a consensus (soft-book median) ref -- INFORMATIONAL only
     sharp_sources = {"pinnacle": 0, "consensus": 0}
     n_closed = 0         # non-void bets that got ANY captured close (Kalshi mid or sharp) -- coverage denominator
@@ -136,14 +154,14 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
         if b["closing_price"] is not None and entry is not None:
             gross = clv(entry, b["closing_price"])
             net = gross - fee * entry * (1.0 - entry)  # per-contract entry-fee drag, same price units
-            rows.append((net, gross, _iso_week(b["occurrence_datetime"] or b["ts"]), b["experience"]))
+            rows.append((net, gross, _iso_week(b["occurrence_datetime"] or b["ts"]), b["experience"], b["staleness"]))
             has_close = True
         if b["sharp_close"] is not None and entry is not None:
             # SHARP CLV: entry vs the Shin-devigged sharp CLOSE, net of the entry fee (same basis as Kalshi).
             sharp_net = (b["sharp_close"] - entry) - fee * entry * (1.0 - entry)
             wk = _iso_week(b["occurrence_datetime"] or b["ts"])
             if b["sharp_source"] == "pinnacle":
-                pinnacle_rows.append((sharp_net, wk))
+                pinnacle_rows.append((sharp_net, wk, b["staleness"]))
             elif b["sharp_source"] == "consensus":
                 consensus_rows.append((sharp_net, wk))
             if b["sharp_source"] in sharp_sources:
@@ -183,8 +201,13 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
         and missed_rate <= cfg.max_missed_capture_rate         # the closing-line sample isn't a thin leftover
     )
     buckets: dict = {}
-    for net, _gross, _week, exp in rows:
+    for net, _gross, _week, exp, _stale in rows:
         buckets.setdefault(_experience_bucket(exp, cfg.thin_matches), []).append(net)
+    # Layoff segmentation on the BINDING (Pinnacle) track -- this is the pre-registered instrument
+    # for the decay decision, so it must be measured against the sharp close, not Kalshi's own.
+    sharp_stale: dict = {}
+    for sharp_net, _wk, stale in pinnacle_rows:
+        sharp_stale.setdefault(_staleness_bucket(stale), []).append(sharp_net)
     return {
         "n_opportunities": len(bets),
         "n_results": results,
@@ -213,5 +236,9 @@ def summarize(bets, cfg, *, seed: int = 0) -> dict:
         "max_missed_rate": cfg.max_missed_capture_rate,
         "go_live": go_live,
         "buckets": {lab: {"n": len(v), "mean_clv": float(np.mean(v))} for lab, v in buckets.items()},
+        # Layoff segmentation of the SHARP (binding) CLV track -- instrumentation for the
+        # pre-registered decay decision; nothing in the go-live gate reads it.
+        "sharp_by_staleness": {lab: {"n": len(v), "mean_sharp_clv": float(np.mean(v))}
+                               for lab, v in sharp_stale.items()},
         "captures": captures,  # {auto, manual, sharp_only, missed} -- closing-line capture health
     }

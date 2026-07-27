@@ -2,7 +2,8 @@
 
 Read-only over the SQLite log (data/matador.db). Reuses matador.clv.summarize -- the SAME
 net-of-fee, day-clustered bootstrap the /stats go-live gate uses, so no math is re-derived here --
-on the whole sample and on each segment: tour, entry price band, adverse-selection flag, and ISO
+on the whole sample and on each segment: tour, entry price band, adverse-selection flag, LAYOFF
+(days since either player last played -- the pre-registered inactivity-decay instrument), and ISO
 week. A capture-health tally (auto / manual / missed) shows data quality. Segments below the 200-bet
 go-live floor are annotated as informational (their CI is too wide to gate on).
 
@@ -15,10 +16,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from matador import storage  # noqa: E402
-from matador.clv import MIN_BETS, summarize  # noqa: E402
+from matador.clv import MIN_BETS, _staleness_bucket, summarize  # noqa: E402
 from matador.config import load_config  # noqa: E402
 
 _BANDS = ["longshot(<35¢)", "midprice(35-65¢)", "favorite(>65¢)"]  # fees peak near 50¢, shrink on favorites
+# Layoff buckets in reading order (30d is the pre-registered decay decision boundary).
+_STALENESS_ORDER = ["fresh(<14d)", "recent(14-29d)", "layoff(30-59d)", "layoff(60d+)", "unknown"]
 
 
 def _price_band(price) -> str:
@@ -55,6 +58,11 @@ def segment_summaries(bets, cfg) -> dict:
         "tour": grouped(lambda b: b["tour"] or "?"),
         "price_band": grouped(lambda b: _price_band(b["price"]), order=_BANDS),
         "flag": grouped(lambda b: "flagged" if b["flagged"] else "unflagged", order=["flagged", "unflagged"]),
+        # LAYOFF: the pre-registered instrument for the inactivity-decay decision. Each bucket runs
+        # through summarize(), so it carries a sharp CI + week-cluster count -- the decay criteria
+        # need CLV on the >=30d segment to be negative with a CI excluding zero (see
+        # DESIGN-DECISIONS "Layoff / inactivity"). Decay was NOT built on backtest evidence.
+        "staleness": grouped(lambda b: _staleness_bucket(b["staleness"]), order=_STALENESS_ORDER),
         "week": grouped(_week),
     }
 

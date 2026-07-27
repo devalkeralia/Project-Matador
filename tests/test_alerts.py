@@ -12,7 +12,8 @@ def _opp(**overrides) -> Opportunity:
         market_ticker="KXATPMATCH-26JUL04AB-A", event_ticker="KXATPMATCH-26JUL04AB",
         market_player="Player Aaa", opponent="Player Bbb", side="yes", price=0.54, p_model=0.60, net_edge=0.043,
         suggested_stake=46.0, contracts=85, liquidity=100.0, trigger_reason="prematch_value",
-        occurrence_datetime="2026-07-04T13:00:00Z", flagged=False, experience=100, score_state=None,
+        occurrence_datetime="2026-07-04T13:00:00Z", flagged=False, experience=100, staleness=3,
+        score_state=None,
     )
     fields.update(overrides)
     return Opportunity(**fields)

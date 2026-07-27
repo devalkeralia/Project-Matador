@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # the-odds-api tennis sport keys are per-tournament and irregular, so map a competition-string
 # keyword -> the key SUFFIX (the tour prefix `tennis_atp_`/`tennis_wta_` is added at lookup). A
 # wrong-tour key (e.g. a WTA Paris that doesn't exist) just 404s -> [] -> no sharp ref (fail-safe).
-# Confirmed against GET /v4/sports (2026-07); RE-VERIFY the slugs live at the August Masters.
+# All slugs below re-confirmed against GET /v4/sports on 2026-07-27 (zero drift since 2026-07).
 _SUFFIX_BY_KEYWORD = {
     "australian open": "aus_open_singles",
     "french open": "french_open", "roland garros": "french_open",
@@ -57,6 +57,7 @@ _SUFFIX_BY_KEYWORD = {
     "bad homburg": "bad_homburg_open",
     "charleston": "charleston_open",
     "berlin": "german_open",
+    "washington": "washington_open",
 }
 
 

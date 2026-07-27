@@ -26,7 +26,22 @@ import pandas as pd  # noqa: E402
 
 from matador.names import normalize  # noqa: E402
 
-RAW_URL = "https://raw.githubusercontent.com/LuckyLoser91/TennisCourtLog/main/tennis_{tour}/{tour}_matches_{year}.csv"
+# media.githubusercontent.com/media/ RESOLVES Git LFS; raw.githubusercontent.com does not. Upstream
+# moved these CSVs to LFS (seen 2026-07-27), after which the raw host served 131-byte pointer stubs.
+RAW_URL = "https://media.githubusercontent.com/media/LuckyLoser91/TennisCourtLog/main/tennis_{tour}/{tour}_matches_{year}.csv"
+
+REQUIRED_COLUMNS = (b"winner_name", b"loser_name", b"tourney_date")
+
+
+def _is_usable_csv(content: bytes) -> bool:
+    """True only if this looks like a match CSV prepare() can consume. Guards the overwrite: a
+    Git-LFS pointer stub (or any upstream format change) must leave the existing archive alone
+    instead of replacing it -- an unvalidated 'any 200 with content' write destroyed 59 good
+    year files when upstream switched to LFS."""
+    if content.lstrip().startswith(b"version https://git-lfs.github.com/spec/v1"):
+        return False
+    header = content.split(b"\n", 1)[0]
+    return all(col in header for col in REQUIRED_COLUMNS)
 
 
 def _player_id(name: str) -> str:
@@ -42,6 +57,7 @@ def fetch(tour: str, year_from: int, year_to: int) -> int:
     src_dir = Path(f"data/tennis_{tour}_raw")
     src_dir.mkdir(parents=True, exist_ok=True)
     got = 0
+    rejected = 0
     with httpx.Client(timeout=40.0, follow_redirects=True) as client:
         for year in range(year_from, year_to + 1):
             url = RAW_URL.format(tour=tour, year=year)
@@ -51,12 +67,18 @@ def fetch(tour: str, year_from: int, year_to: int) -> int:
                     if r.status_code == 404:
                         break  # that year isn't published yet
                     if r.status_code == 200 and r.content:
+                        if not _is_usable_csv(r.content):
+                            rejected += 1
+                            break  # bad body won't heal on retry; keep whatever is already on disk
                         (src_dir / f"{tour}_matches_{year}.csv").write_bytes(r.content)
                         got += 1
                         break
                 except httpx.HTTPError:
                     pass
     print(f"[{tour}] fetched {got} year file(s) from LuckyLoser91")
+    if rejected:
+        print(f"[{tour}] WARNING: {rejected} year file(s) rejected as unusable (LFS pointer or "
+              f"changed format) -- existing archives kept; the feed may have moved")
     return got
 
 
@@ -85,6 +107,17 @@ def prepare(tour: str) -> None:
     parsed[rest] = pd.to_datetime(raw[rest], errors="coerce")
     df["tourney_date"] = parsed
     df = df.dropna(subset=["tourney_date"]).copy()
+
+    # Drop impossible future dates -- the feed carries occasional year typos (seen 2026-07-27: one
+    # Iasi row dated 2029-07-20 instead of 2026). Left in, they hand those players a last-played
+    # date in the future, which permanently exempts them from the stale-ratings gate.
+    future = df["tourney_date"] > pd.Timestamp(date.today())
+    if future.any():
+        for _, r in df[future].iterrows():
+            print(f"[{tour}] dropping future-dated match: {r['tourney_date'].date()} "
+                  f"{r['tourney_name']} {r['winner_name']} d. {r['loser_name']}")
+        df = df[~future].copy()
+
     df["tourney_date"] = df["tourney_date"].dt.strftime("%Y%m%d").astype(int)
 
     keep = ["tourney_date", "tourney_name", "surface", "round", "best_of",

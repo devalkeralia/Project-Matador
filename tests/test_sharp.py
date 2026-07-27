@@ -25,6 +25,8 @@ def test_sport_key_maps_covered_tournaments_only():
     assert sport_key("atp", "Wimbledon Men Singles") == "tennis_atp_wimbledon"
     assert sport_key("wta", "WTA Cincinnati Open") == "tennis_wta_cincinnati_open"
     assert sport_key("atp", "Canadian Open (Toronto)") == "tennis_atp_canadian_open"
+    assert sport_key("atp", "ATP Washington") == "tennis_atp_washington_open"
+    assert sport_key("wta", "WTA Washington") == "tennis_wta_washington_open"
     assert sport_key("atp", "Bastad") is None     # uncovered 250 -> no fetch
     assert sport_key("atp", None) is None
 

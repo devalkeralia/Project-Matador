@@ -89,3 +89,75 @@ def test_data_through_reads_the_artifact_and_tolerates_a_bad_one(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json")
     assert mod._data_through(str(bad)) == {}
+
+
+# ---- offsiting the paper sample (the only irreplaceable artifact) ----
+
+def test_snapshot_db_captures_rows_still_in_the_wal(tmp_path):
+    """The snapshot must include committed rows that a plain file copy would MISS.
+
+    The bot runs in WAL mode, so recent commits live in matador.db-wal. This asserts the backup API
+    path picks them up -- a naive read_bytes() of the main file would return a DB missing the newest
+    bets, which are exactly the ones a disaster would otherwise lose.
+    """
+    import sqlite3
+    mod = _load()
+    db = tmp_path / "matador.db"
+    live = sqlite3.connect(db)
+    live.execute("PRAGMA journal_mode=WAL")
+    live.execute("CREATE TABLE opportunities (id INTEGER PRIMARY KEY, note TEXT)")
+    live.execute("INSERT INTO opportunities (note) VALUES ('bet-1')")
+    live.commit()
+    assert (tmp_path / "matador.db-wal").exists()          # the commit really is in the WAL
+
+    blob = mod.snapshot_db(db)
+    assert blob is not None and blob.startswith(b"SQLite format 3")
+
+    restored = tmp_path / "restored.db"
+    restored.write_bytes(blob)
+    rows = sqlite3.connect(restored).execute("SELECT note FROM opportunities").fetchall()
+    assert rows == [("bet-1",)]                            # the WAL-resident row survived the round trip
+    live.close()
+
+
+def test_offsite_db_is_best_effort_and_never_raises(tmp_path, monkeypatch):
+    mod = _load()
+    assert "no db to offsite" in mod.offsite_db("T", 1, tmp_path / "missing.db")
+
+    db = tmp_path / "matador.db"
+    import sqlite3
+    sqlite3.connect(db).execute("CREATE TABLE t (x)")
+
+    def boom(*a, **k):
+        raise mod.httpx.ConnectError("telegram unreachable")
+    monkeypatch.setattr(mod.httpx, "post", boom)
+    assert "db offsite failed" in mod.offsite_db("T", 1, db)   # swallowed, reported, cron survives
+
+
+def test_offsite_db_posts_the_snapshot_as_a_dated_document(tmp_path, monkeypatch):
+    from datetime import date
+    mod = _load()
+    db = tmp_path / "matador.db"
+    import sqlite3
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE t (x)")
+    conn.commit()
+    conn.close()
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        seen.update(url=url, data=data, files=files)
+        return _Resp()
+    monkeypatch.setattr(mod.httpx, "post", fake_post)
+
+    out = mod.offsite_db("TOKEN", 42, db, today=date(2026, 8, 3))
+    assert "HTTP 200" in out
+    assert seen["url"].endswith("/botTOKEN/sendDocument")       # a document, not a text message
+    assert seen["data"]["chat_id"] == 42
+    name, blob, mime = seen["files"]["document"]
+    assert name == "matador-2026-08-03.db"                     # dated -> weekly copies don't overwrite
+    assert blob.startswith(b"SQLite format 3") and mime == "application/x-sqlite3"

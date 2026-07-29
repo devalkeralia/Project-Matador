@@ -11,7 +11,9 @@ especially then). Usage:
     python scripts/refresh_notify.py <refresh_exit_code>
 """
 import json
+import sqlite3
 import sys
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -80,6 +82,62 @@ def build_message(exit_code: int, data_through: dict[str, str], log_tail: str) -
     return f"🔄 Weekly refresh OK — model data through {dates}."
 
 
+def snapshot_db(db_path: Path) -> bytes | None:
+    """A CONSISTENT copy of the paper sample, or None if it can't be read.
+
+    Uses SQLite's online-backup API rather than reading the file: the bot runs in WAL mode, so the
+    committed rows are split between `matador.db` and `matador.db-wal` and a plain file read can
+    produce a torn copy that silently omits the most recent bets -- exactly the rows most at risk.
+    Opens read-only so a backup can never disturb the live writer.
+    """
+    try:
+        src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            dst_path = Path(td) / db_path.name
+            dst = sqlite3.connect(dst_path)
+            try:
+                with dst:
+                    src.backup(dst)
+            finally:
+                dst.close()
+            return dst_path.read_bytes()
+    except (sqlite3.Error, OSError):
+        return None
+    finally:
+        src.close()
+
+
+def offsite_db(token: str, chat_id, db_path: Path, today: date | None = None) -> str:
+    """Attach the paper sample to the weekly DM. Returns a status line for the cron log.
+
+    Why: DEPLOY.md calls matador.db the project's only irreplaceable artifact -- 12 weeks of forward
+    CLV that cannot be reconstructed (the-odds-api historical odds are not on the free tier, and a
+    paper fill price is not recoverable later) -- yet every copy lives in one DO account plus a manual
+    scp the owner has to remember. This lands an independent copy in a chat they already read, with no
+    new credential and no new infrastructure. Best-effort by design: a failed upload must never fail
+    the cron or mask the refresh outcome.
+    """
+    if not db_path.exists():
+        return "no db to offsite"
+    blob = snapshot_db(db_path)
+    if blob is None:
+        return "db snapshot failed"
+    stamp = (today or date.today()).isoformat()
+    try:
+        r = httpx.post(
+            f"https://api.telegram.org/bot{token}/sendDocument",
+            data={"chat_id": chat_id, "caption": f"📦 matador.db backup — {stamp} ({len(blob) / 1024:.0f} KB)"},
+            files={"document": (f"matador-{stamp}.db", blob, "application/x-sqlite3")},
+            timeout=60.0,
+        )
+        return f"db offsite HTTP {r.status_code} ({len(blob) / 1024:.0f} KB)"
+    except httpx.HTTPError as exc:
+        return f"db offsite failed: {type(exc).__name__}: {exc}"
+
+
 def main() -> None:
     exit_code = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     cfg = load_config()
@@ -101,6 +159,9 @@ def main() -> None:
         print(f"[notify] telegram HTTP {r.status_code}")
     except httpx.HTTPError as exc:                     # never fail the cron over a notification
         print(f"[notify] send failed: {type(exc).__name__}: {exc}")
+    # Offsite the sample AFTER the outcome text, so an upload problem can never delay or replace the
+    # message that actually reports whether the model advanced.
+    print(f"[notify] {offsite_db(secrets.telegram_token, secrets.telegram_chat_id, Path(cfg.db_path))}")
 
 
 if __name__ == "__main__":

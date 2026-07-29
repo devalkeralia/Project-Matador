@@ -3,7 +3,13 @@
 Produced by an adversarial multi-agent improvements pass (Fable 5, 5 lenses -> ruthless prioritiser):
 **34 raw ideas -> 11 do-now, 4 after-gate, 2 needs-data, 7 rejected.**
 
-**Nothing here is applied.** This is a review artifact — prune it before it becomes project doctrine.
+**Status 2026-07-29: 7 of the 11 do-now items are APPLIED** (#1, #2, #3, #4, #7, #8, #11 — each struck
+through below with what was actually done). Remaining: #5 and #6 (small, safe), #9 (deferred by
+choice — it is needed *at* the week-12 read and is just as cheap then), and #10 (deliberately separate:
+the only item that writes to the live sample unattended, so it needs Kalshi's retirement/walkover
+settlement behaviour verified live first).
+
+The rest of this file is the original review artifact. Prune it before it becomes project doctrine.
 
 ## The constraint that tags every item
 
@@ -61,7 +67,12 @@ why this survived.
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/bot.py:192 and :214; fix uses last_position in /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/storage.py and backed_player in /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/engine.py; test in /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/tests/test_bot.py`
 
-### 2. Make the daily heartbeat answer the four questions that currently require SSH  _[small]_
+### 2. ~~Make the daily heartbeat answer the four questions that currently require SSH~~ — **DONE 2026-07-29**
+
+**Done.** All four, plus the a/m/s/x legend, plus the header degrades to `🚨 Matador — N PROBLEM(S)` when
+anything warns (a body full of failures under an "OK" first line is how a silent outage survives 84
+daily DMs). Credits survive the per-job sharp clients via `sharp.last_requests_remaining()`. Original entry below.
+
 
 **What.** Four additions to _heartbeat_text / scheduled_scan_job: (1) bets awaiting /result - ids and age for
 rows whose occurrence_datetime is >12h past with result IS NULL, cap the listed ids at ~5; (2) flag
@@ -84,7 +95,11 @@ sagging below the 0.5 co-gate weeks later, by which time those bets are permanen
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/bot.py _heartbeat_text (~775) and scheduled_scan_job (~684); /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/storage.py (new query beside pending_captures ~243); /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/sharp.py fetch_h2h (~109)`
 
-### 3. Pre-register the week-12 read protocol and the stopping rule (docs only)  _[small]_
+### 3. ~~Pre-register the week-12 read protocol and the stopping rule~~ — **DONE 2026-07-29**
+
+**Done.** DESIGN-DECISIONS "Week-12 read protocol — PRE-REGISTERED", written at n=11 bets, plus the
+K-floor-supersedes-recency cross-reference. Original entry below.
+
 
 **What.** One dated section in DESIGN-DECISIONS, written BEFORE more bets accrue, fixing: the gate is read
 ONCE at week >=12 with n_sharp>=200 exactly as clv.summarize computes it (no substitute metric);
@@ -110,7 +125,12 @@ evidence.
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/DESIGN-DECISIONS.md (next to the go-live gate ~506, the optional-stopping bullet ~561, the Open-items lever text ~540)`
 
-### 4. Offsite the paper sample weekly: attach matador.db to the refresh DM  _[small]_
+### 4. ~~Offsite the paper sample weekly~~ — **DONE 2026-07-29**
+
+**Done**, with one upgrade on the spec: the snapshot goes through SQLite's online-backup API rather
+than reading the file, because the bot runs in WAL mode — verified that a plain `read_bytes()` of
+`matador.db` doesn't even carry the table, let alone the recent rows. Original entry below.
+
 
 **What.** After refresh_notify sends its outcome text, POST data/matador.db (20 KB today) to Telegram
 sendDocument with the existing token/chat_id, best-effort under the same never-fail-the-cron
@@ -174,7 +194,16 @@ the bot locally and poke it') silently takes down the droplet's poller mid-sampl
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/DEPLOY.md lines 54-64, the Backups table row (~103), step 9 item 3 (~333), step 8; /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/README.md during-run command policy (~235)`
 
-### 7. Kill the seven verified surviving mutations in the gate and the closing-line guards  _[medium]_
+### 7. ~~Kill the surviving mutations in the gate and the closing-line guards~~ — **DONE 2026-07-29**
+
+**Done — and the count was SIX, not seven.** Re-ran every mutation at runtime: the `sharp_coverage`
+co-gate was already covered. The other six all passed 306/306 and now each kill at least one test
+(the two timing ones kill three each). The gate matrix hinges on a base case that genuinely returns
+`go_live=True` with the two tracks DIVERGING (n_sharp 210 vs n_clv 240) — every prior gate test had
+them aliased, which is exactly why "count the circular Kalshi rows" was undetectable. Timing
+constants are pinned ABSOLUTELY, since a test written as `start + CAPTURE_LATE_GRACE + 1min` scales
+with the constant and stays green when it widens. Original entry below.
+
 
 **What.** Mutation-tested at runtime (module substitution; no repo files touched) - all seven survive 297/297.
 Four tests close them. (a) ONE near-miss gate matrix in tests/test_clv.py where the two CLV tracks
@@ -209,7 +238,13 @@ read.
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/clv.py:82-94 (BCa) and :195-202 (gate); /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/bot.py:279 and :331 (guards; constants at :92 and :94); tests in /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/tests/test_clv.py and /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/tests/test_bot.py`
 
-### 8. Log the sharp fair probability at ENTRY so week 12 can separate venue basis from line drift  _[medium]_
+### 8. ~~Log the sharp fair probability at ENTRY~~ — **DONE 2026-07-29**
+
+**Done.** `opportunities.sharp_entry` / `sharp_entry_source`, filled by `bot._sharp_entry_job` strictly
+after the DM. Guarded by a test asserting the DM happens FIRST and that a failing fill can't touch the
+alert path (proved by reordering the calls and watching it fail), plus a migration test on a
+pre-existing populated DB. Original entry below.
+
 
 **What.** Two nullable columns on opportunities (sharp_entry, sharp_entry_source) added via the existing
 _MIGRATIONS pattern, filled by reusing sharp.sharp_fair_for_opp with the batch cache. Keep it
@@ -273,7 +308,15 @@ three guards above are not optional.
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/kalshi/market.py (Market dataclass + from_api, lines 9-45: parse result); /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/bot.py (new job beside _auto_capture_job, reusing run_result / record_outcome)`
 
-### 11. Dead-man's switch on the heartbeat (the one item legitimately declinable on simplicity grounds)  _[small]_
+### 11. ~~Dead-man's switch on the heartbeat~~ — **DONE 2026-07-29** (owner ACCEPTED the tradeoff)
+
+**Done.** `bot.ping_dead_man_switch` + `HEALTHCHECK_URL` in `secrets/.env`, opt-in (unset = no ping, no
+network call). The deciding argument was not general liveness but one specific failure: running
+`scripts/bot.py` locally on the prod token 409s the droplet's poller, and that outage is invisible to
+the container check AND to the refresh DM (which runs in its own `docker compose run --rm` container
+and would still report "refresh OK"). Pinging strictly AFTER a successful DM is what makes the wedge
+detectable, and that ordering is pinned by a test. Original entry below.
+
 
 **What.** At the end of heartbeat_job, after the DM sends, one best-effort httpx GET to a healthchecks.io
 check URL (free tier; URL in secrets/.env plus .env.example) with the check's grace set to ~26h,

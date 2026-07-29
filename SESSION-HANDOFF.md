@@ -64,12 +64,23 @@ is not live until `git pull && docker compose build && docker compose up -d` on 
 `/check` mitigation can then drop its defect rider — but `/check` stays in "Avoid" below for the
 separate owner-timing reason.
 
-### 2. The improvements backlog
-`IMPROVEMENTS.md`. Not applied, deliberately — prune before it becomes doctrine. Top items after the
-defect above: heartbeat answering the four questions that currently need SSH; pre-registering the
-week-12 read protocol and stopping rule; logging the sharp fair probability **at entry** (irrecoverable
-if skipped — without it a positive gate can't be separated from a standing Kalshi-vs-Pinnacle venue
-basis); offsiting `matador.db` weekly.
+### 2. The improvements backlog — **6 of 11 do-now items APPLIED 2026-07-29**
+`IMPROVEMENTS.md` (each done item struck through with what was actually built). Applied: #1 prior-id,
+**#8 sharp-at-entry** (the irrecoverable one — now collecting), **#7 the gate mutations**, #3 the
+pre-registered read protocol, #4 offsiting `matador.db`, #2 the self-sufficient heartbeat.
+
+Still open, in the order I'd take them:
+- **#5** refresh shrink-guard + degradation warnings + a build stamp in `model.json` — safe (warn-only
+  and metadata; verified `Model.from_artifact` ignores unknown top-level keys, so a stamp can't change
+  a prediction).
+- **#6** two verifiable doc traps (the stale deploy-key teardown step; a warning never to run
+  `scripts/bot.py` locally on the prod token while the droplet is up — two long-pollers 409 and the
+  droplet goes silent). The third part needs the DO console: the backup frequency contradiction at
+  `DEPLOY.md:54` (daily/~14-day vs weekly/4-week) — **owner must check which is actually enabled.**
+- **#9** the three week-12 analyses in `clv_report` — deferred on purpose, equally cheap at the read.
+- **#10** auto-record settlement — the biggest ops saver but the only unattended writer to the live
+  sample; needs Kalshi retirement/walkover behaviour verified live first.
+- **#11** dead-man's switch — still undecided; adds a fifth external dependency.
 
 ### 3. Deferred model levers — AFTER the gate reads only
 Ranked in `IMPROVEMENTS.md`: K floor → surface cold-start → recency-weighted Elo (conditional on the

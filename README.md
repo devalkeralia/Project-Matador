@@ -146,8 +146,39 @@ rebuilds the artifact, restarts the bot, and then **always** DMs the outcome via
 `scripts/refresh_notify.py`. "Always" is the point: the refresh steps are `&&`-chained, but the
 notification must fire even when they fail, or the one outcome you need to hear about is the one that
 stays silent. It distinguishes **OK** / **REJECTED** (upstream moved, archives kept, model FROZEN) /
-**FAILED**, because those need different responses. The daily heartbeat additionally reports
-`model data through YYYY-MM-DD (Nd)` and flags `⚠️ STALE` past 10 days.
+**FAILED**, because those need different responses. It then **attaches `matador.db`** to the same DM
+(a consistent SQLite backup-API snapshot, so WAL-resident rows aren't lost) — the paper sample is the
+only irreplaceable artifact, and this puts a weekly copy somewhere that isn't the droplet. Both the
+message and the upload are best-effort and can never fail the cron.
+
+**The daily heartbeat answers the questions that would otherwise need SSH**, so a silent failure can't
+hide behind "no edge yet":
+
+```
+💓 Matador OK — model data atp 2026-08-09 (1d) / wta 2026-08-09 (1d)
+14 opps, 9 Kalshi-closed over 3 week(s); open exposure $180
+captures 7a/2m/0s/1x (auto/manual/sharp-only/missed); 3 pending
+sharp 8 pinnacle / 1 consensus (coverage 89%)
+last scan 2h ago: ok, 1 new
+📝 2 awaiting /result: #11, #12
+```
+
+Every line is a failure the bot cannot otherwise tell you about: model freshness (the weekly refresh
+silently froze once), **scan status** (a Kalshi 403 from the droplet IP looks exactly like a quiet
+market), bets **awaiting `/result`** (`roi` stays `None` without them, and ROI ≥ 0 is a hard go-live
+co-gate), pending rows with **no start time** (they never auto-capture — run `/close <id> pre`), and
+**odds-api credits** running low (exhaustion silently NULLs `sharp_close`). If anything is wrong the
+header itself changes to `🚨 Matador — N PROBLEM(S) below`, because the first line is all that gets
+read on a busy day.
+
+**Dead-man's switch (optional, recommended).** Set `HEALTHCHECK_URL` in `secrets/.env` to a
+[healthchecks.io](https://healthchecks.io) check URL and the bot pings it **after** each heartbeat DM
+is sent, with the check's grace at ~26h. This inverts the liveness problem: without it *you* have to
+notice a message that never arrived, and the failures the heartbeat exists to catch are the same ones
+that stop it. Pinging only after a successful send is what makes it catch a **wedged long-poll** — the
+likeliest outage, caused by running `scripts/bot.py` locally on the production token while the droplet
+is up (two pollers on one token 409, and the droplet goes silent while looking perfectly healthy).
+Unset, the ping is skipped entirely and detection latency is however long you take to notice.
 
 **No-Docker alternative (systemd):** create `/etc/systemd/system/matador.service` with
 `WorkingDirectory=/path/to/Tennis Betting`, `ExecStart=/path/to/.venv/bin/python scripts/bot.py`,

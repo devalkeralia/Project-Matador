@@ -251,6 +251,16 @@ History worth knowing: the first fix (`799688a`) sorted the anchor in the two sc
 believed complete; the third caller was missed and found later by adversarial review. When touching
 this, **grep every writer of the dedup key**, not just the path you can reproduce.
 
+**Corollary (2026-07-29, second round): every _reader_ of the key must mirror it too.** Changing the
+dedup key left the alert layer resolving the prior row by the OLD key — `run_check`/`run_scan` called
+`last_opportunity(market_ticker, side)` after `log_opportunity` returned `None`, so a cross-anchor
+dedup found nothing and `prior["id"]` raised `TypeError`. Worst path: that raise happens mid-`/scan`,
+`scheduled_scan_job` swallows it, and the cycle's alerts vanish — silently suppressing the systematic
+sampling that keeps owner timing out of the sample. Both sites now go through `bot._prior_position_id`,
+which mirrors `log_opportunity`'s key (including its no-opponent fallback) and is None-safe. Guarded by
+a parametrized test over every ordered pair of `{scan, /check A B, /check B A}`. Caught before it ever
+fired: all 11 live rows carry the scan anchor, so no `/check` had logged one.
+
 ## Underdog over-rating — the first-order defect (2026-07-27)
 
 **The model over-rates the market underdog by +4.3pp overall — 7.0 SEs from zero — while the market

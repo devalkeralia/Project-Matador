@@ -158,6 +158,68 @@ def test_run_check_dedup_shows_prior_id_and_no_second_row():
     conn.close()
 
 
+class SymmetricModel:
+    """Answers BOTH orientations consistently (p for (a,b), 1-p for (b,a)), unlike OrientedModel.
+    Needed to reach the reversed-order anchor: /check Bbb Aaa resolves to Bbb's market, so the
+    engine asks predict(Bbb, Aaa) -- which OrientedModel refuses, abstaining before the dedup."""
+
+    def __init__(self, a, b, p):
+        self._a, self._b, self._p = a, b, p
+
+    def predict(self, tour, name_a, name_b, *args, **kwargs):
+        if (name_a, name_b) == (self._a, self._b):
+            return WinProbability(self._p, "ok")
+        if (name_a, name_b) == (self._b, self._a):
+            return WinProbability(1.0 - self._p, "ok")
+        return WinProbability(None, "wrong_orientation")
+
+
+def _step_scan(client, model, cfg, conn):
+    return run_scan(client, model, cfg, conn, ["atp"])
+
+
+def _step_check_ab(client, model, cfg, conn):
+    return run_check(client, model, cfg, conn, "atp", "Aaa", "Bbb")
+
+
+def _step_check_ba(client, model, cfg, conn):
+    return run_check(client, model, cfg, conn, "atp", "Bbb", "Aaa")
+
+
+_STEPS = {"scan": _step_scan, "check(A,B)": _step_check_ab, "check(B,A)": _step_check_ba}
+
+
+@pytest.mark.parametrize("first", _STEPS)
+@pytest.mark.parametrize("second", _STEPS)
+def test_prior_id_survives_a_cross_anchor_dedup(first, second):
+    """Every ordered pair of entry points must dedup to ONE row and still name the prior id.
+
+    The three paths anchor differently on the same match -- scan sorts by ticker (-A/yes),
+    resolve_match anchors on whichever player was TYPED first (so /check Bbb Aaa gives -B/no) --
+    yet all three back Player Aaa, i.e. one economic position. log_opportunity dedups on that
+    position, but the alert layer used to re-find the prior row by (market_ticker, side); across
+    anchors that lookup missed and prior["id"] raised TypeError. Worst path: run_scan raising
+    mid-sweep is swallowed by scheduled_scan_job, silently dropping the cycle's alerts and with
+    them the systematic sampling that keeps owner timing out of the paper sample.
+
+    The H2H-vs-outright double count (a Slam final listed under both series carries two different
+    event_tickers) is a DOCUMENTED DEFERRAL, deliberately out of scope here -- see
+    DESIGN-DECISIONS "Dedup identity". Don't "fix" it by widening this test's key.
+    """
+    model, cfg = SymmetricModel("Player Aaa", "Player Bbb", 0.60), make_cfg()
+    conn = _db()
+    with make_client() as client:
+        out_first = _STEPS[first](client, model, cfg, conn)
+        rows_first = recent_opportunities(conn, 10)
+        out_second = _STEPS[second](client, model, cfg, conn)
+
+    assert len(rows_first) == 1, f"{first} should log exactly one row"
+    assert "opp #1" in out_first
+    assert len(recent_opportunities(conn, 10)) == 1, f"{first} then {second} logged the position twice"
+    assert "opp #1" in out_second, f"{second} did not name the prior id after {first}"
+    conn.close()
+
+
 def test_model_freshness_reports_every_tour_and_ages_off_the_oldest(tmp_path):
     """The heartbeat's freshness line is the ONLY routine signal that the weekly refresh has silently
     failed (the `rejected` warning goes to a log nobody reads). It must show EVERY tour and age off

@@ -32,10 +32,14 @@ from matador.alerts import (
     format_recent, format_result, format_scan, format_stats,
 )
 from matador.clv import net_pnl, summarize
-from matador.engine import evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series
+from matador.engine import (
+    backed_player, evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series,
+)
 from matador.kalshi.client import KalshiClient
 from matador.sharp import SharpOddsClient, sharp_fair_for_opp
-from matador.storage import get_opportunity, last_opportunity, pending_captures, recent_opportunities, settled_bets
+from matador.storage import (
+    get_opportunity, last_opportunity, last_position, pending_captures, recent_opportunities, settled_bets,
+)
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +171,25 @@ def _dry_banner(dry: bool) -> str:
     return _DRY_BANNER if dry else ""
 
 
+def _prior_position_id(conn, opp) -> int | None:
+    """The id of the already-logged row that made log_opportunity dedup `opp` away, or None.
+
+    Mirrors log_opportunity's key EXACTLY -- the economic position (event_ticker + backed player),
+    falling back to (market_ticker, side) only in the same no-opponent case the dedup itself falls
+    back on. Looking the prior row up by (market_ticker, side) unconditionally was a live TypeError:
+    one position is expressible as yes-on-A or no-on-B, so a row logged under the other anchor was
+    invisible to that lookup and prior["id"] blew up -- taking down a whole /scan sweep from inside
+    scheduled_scan_job's except, which swallows it. See storage.last_position.
+
+    None-safe by design: since the key mirrors the dedup, a miss should be unreachable, and paying
+    for it with an id-less alert line beats losing a scheduled cycle's alerts to an exception.
+    """
+    backed = backed_player(opp)
+    prior = (last_position(conn, opp.event_ticker, backed) if backed is not None
+             else last_opportunity(conn, opp.market_ticker, opp.side))
+    return prior["id"] if prior is not None else None
+
+
 def run_check(client, model, cfg, conn, tour: str, a: str, b: str, *, dry: bool = False) -> str:
     """Evaluate one match; on a qualifying edge log it (deduped) and format the alert, else a
     friendly abstain. On a dedup the alert shows the PRIOR opp id and a not-re-logged note.
@@ -188,9 +211,9 @@ def run_check(client, model, cfg, conn, tour: str, a: str, b: str, *, dry: bool 
                 + _exposure_warning(conn, cfg) + _NOTES_FOOTER)
     opp_id = log_opportunity(conn, opp)
     warn = _exposure_warning(conn, cfg)
-    if opp_id is None:  # a prior alert for this contract+side still stands
-        prior = last_opportunity(conn, opp.market_ticker, opp.side)
-        return format_alert(opp, prior["id"], cfg.bankroll) + "\n(already logged — not re-logged)" + warn + _NOTES_FOOTER
+    if opp_id is None:  # a prior alert for this POSITION still stands (possibly under the other anchor)
+        return (format_alert(opp, _prior_position_id(conn, opp), cfg.bankroll)
+                + "\n(already logged — not re-logged)" + warn + _NOTES_FOOTER)
     return format_alert(opp, opp_id, cfg.bankroll) + warn + _NOTES_FOOTER
 
 
@@ -211,7 +234,7 @@ def run_scan(client, model, cfg, conn, tours) -> str:
             opp = result.opportunity
             opp_id = log_opportunity(conn, opp)
             if opp_id is None:  # still-standing edge -> show it with its prior id, don't re-log
-                opp_id = last_opportunity(conn, opp.market_ticker, opp.side)["id"]
+                opp_id = _prior_position_id(conn, opp)
             alerts.append((opp, opp_id))
     return format_scan(alerts, tally, cfg.bankroll) + _exposure_warning(conn, cfg)
 

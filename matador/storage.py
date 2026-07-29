@@ -40,8 +40,9 @@ CREATE TABLE IF NOT EXISTS outcomes (
     clv REAL
 );
 
--- Dedup lookup: a polling alert loop checks last_opportunity() before re-inserting a
--- still-standing pre-match edge, so one edge doesn't fire on every poll.
+-- Contract-level lookup (last_opportunity): the alert layer's prior-id message and the
+-- no-opponent dedup fallback. NOT the dedup key -- that is the economic position, keyed on
+-- (event_ticker, backed player) via last_position(); see its docstring for why.
 CREATE INDEX IF NOT EXISTS idx_opportunities_market ON opportunities(market_ticker, side);
 """
 

@@ -31,7 +31,14 @@ mutations in the code that decides go-live and guards the closing line.
 
 ## DO NOW — safe during the live run (11)
 
-### 1. Fix the prior-id lookup after a cross-anchor dedup (NEW DEFECT, reproduced)  _[small]_
+### 1. ~~Fix the prior-id lookup after a cross-anchor dedup~~ — **DONE 2026-07-29**  _[small]_
+
+**Fixed.** Both sites now use `bot._prior_position_id`, which mirrors `log_opportunity`'s key
+(no-opponent fallback included) and is None-safe; guarded by a parametrized test over all 9 ordered
+pairs of `{scan, /check A B, /check B A}` — the 4 cross-anchor pairs reproduced the `TypeError`
+before the fix. Never fired live (all 11 rows carry the scan anchor). Rationale recorded in
+DESIGN-DECISIONS "Dedup identity" → Corollary. Original entry below.
+
 
 **What.** run_check and run_scan still resolve the prior row with last_opportunity(conn, opp.market_ticker,
 opp.side) after log_opportunity returns None, but the dedup key is now the economic position. When

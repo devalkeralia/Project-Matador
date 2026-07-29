@@ -53,20 +53,16 @@ topic are noted; this file is the index, not the record.
 
 ## OPEN — pick up here
 
-### 1. A live defect, currently untriggered (highest priority)
-`IMPROVEMENTS.md` do-now #1. `run_check`/`run_scan` still resolve the prior row with
-`last_opportunity(market_ticker, side)` after `log_opportunity` returns `None`, but the dedup key is
-now the economic position — so a cross-anchor dedup returns `None` and `prior["id"]` raises
-`TypeError`. Reproduced both directions.
+### 1. ~~A live defect, currently untriggered~~ — **FIXED 2026-07-29, awaiting deploy**
+The cross-anchor `prior["id"]` `TypeError` in `run_check`/`run_scan`. Both sites now go through
+`bot._prior_position_id`, which mirrors `log_opportunity`'s key; parametrized test over all 9 ordered
+pairs of `{scan, check(A,B), check(B,A)}` (306 tests). It never fired live — re-verified: no
+`TypeError` in 72h of droplet logs, and all 11 rows carry the scan anchor.
 
-- **Severe path:** once one reversed-order `/check` logs a standing edge, every subsequent 8-hourly
-  scan dies mid-sweep and is swallowed — silently suppressing the mechanism that keeps owner-timing
-  bias out of the sample.
-- **Exposure is currently ZERO**: no `TypeError` in the logs and every logged row carries the
-  canonical lower ticker, so nothing has come from a `/check`.
-- **Mitigation until fixed: do not run `/check`.** `/preview` is unaffected.
-- Fix is ~3 lines each site (use `storage.last_position` + `engine.backed_player`) plus a
-  parametrized test over `{scan, check(A,B), check(B,A)}` sequences.
+**Still to do: push + redeploy.** The droplet is at `5a10f21` and pulls from `origin/main`, so the fix
+is not live until `git pull && docker compose build && docker compose up -d` on the box. The
+`/check` mitigation can then drop its defect rider — but `/check` stays in "Avoid" below for the
+separate owner-timing reason.
 
 ### 2. The improvements backlog
 `IMPROVEMENTS.md`. Not applied, deliberately — prune before it becomes doctrine. Top items after the
@@ -102,8 +98,8 @@ K floor) → direct recalibration (near-dead-end). All touch `p_model`, so all m
 | `/preview` `/find` `/stats` `/recent` `/notes` | `/result` `/close` | `/check` `/scan` |
 
 `/result` is not optional: the gate hard-requires realized net-ROI ≥ 0, so missing results make the
-week-12 read unreadable. `/check` and `/scan` log owner-timed opportunities (and `/check` currently
-also arms the defect above).
+week-12 read unreadable. `/check` and `/scan` log owner-timed opportunities — that alone is why they
+stay in "Avoid"; use `/preview` to inspect the engine instead.
 
 **Watch:** Monday's `logs/refresh.log` (`latest` must advance, no `rejected` warning), the daily
 heartbeat DM (its absence is the only outage signal), and `sharp_coverage` in `/stats` (below 0.5 the

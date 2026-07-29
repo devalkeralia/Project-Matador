@@ -237,6 +237,51 @@ def last_position(conn: sqlite3.Connection, event_ticker: str, backed_player: st
     ).fetchone()
 
 
+def awaiting_result(conn: sqlite3.Connection, now_iso: str, hours: int = 12) -> list[sqlite3.Row]:
+    """Bets whose match started > `hours` ago but which still have no win/loss/void recorded.
+
+    The go-live gate hard-requires realized net-ROI >= 0, and roi is None until /result is entered --
+    so a few forgotten weeks make the week-12 read unreadable, or biased toward whichever results the
+    owner happened to feel like entering. Unlike a match result, a paper FILL price cannot be
+    reconstructed after the fact, which is why this needs surfacing while the memory is fresh."""
+    return conn.execute(
+        "SELECT o.id, o.occurrence_datetime FROM opportunities o "
+        "  LEFT JOIN outcomes oc ON oc.opp_id = o.id "
+        "WHERE o.occurrence_datetime IS NOT NULL AND o.occurrence_datetime < ? "
+        "  AND (oc.result IS NULL) ORDER BY o.occurrence_datetime",
+        (_shift_iso(now_iso, -hours),),
+    ).fetchall()
+
+
+def _shift_iso(now_iso: str, hours: int) -> str:
+    """`now_iso` moved by `hours`, rendered in Kalshi's own `...THH:MM:SSZ` shape.
+
+    The comparison in awaiting_result is a STRING compare, which is only order-preserving because
+    every occurrence_datetime we store comes from Kalshi in that one zero-offset format -- so the
+    threshold must be emitted in it too, not as the `+00:00` spelling Python defaults to. The two
+    spellings of an identical instant would sort differently ('+' < 'Z'), which at worst mis-bins a
+    bet sitting exactly on the 12-hour line -- harmless here, but only by luck, so keep the formats
+    aligned rather than relying on that.
+    """
+    from datetime import datetime, timedelta, timezone
+    try:
+        dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return now_iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (dt + timedelta(hours=hours)).astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def untimed_pending(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Pending-capture rows with NO scheduled start time.
+
+    These are invisible failures: bot.schedule_pending_captures skips them (it cannot arm a timer
+    without a start), so they never auto-capture, never DM a miss, and sit in the pending count
+    forever. The only way out is a manual `/close <id> pre`, which the owner has to be told to run."""
+    return [r for r in pending_captures(conn) if not r["occurrence_datetime"]]
+
+
 def settled_bets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Every logged opportunity LEFT JOINed to its outcome (closing line / fill / result) -- the
     input to /stats. Rows without an outcome carry NULLs; the stats layer filters (CLV needs a

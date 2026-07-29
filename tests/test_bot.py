@@ -367,7 +367,106 @@ def test_heartbeat_text_summarizes_state():
     _capture_opp(conn)  # one logged opp, no closing line captured yet
     txt = bot._heartbeat_text(conn, make_cfg())
     assert "Matador OK" in txt and "1 opps" in txt and "1 pending" in txt
+    assert "auto/manual/sharp-only/missed" in txt      # the a/m/s/x legend is spelled out once
     conn.close()
+
+
+# ---- the heartbeat must answer the questions that otherwise need SSH ----
+
+def test_scan_status_line_distinguishes_ok_failed_and_never_ran():
+    """A scan failing every cycle for weeks must not read as 'Matador OK, quiet market'."""
+    import matador.bot as bot
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    assert bot._scan_status_line(None, now) == "no scan yet since restart"
+    assert bot._scan_status_line({}, now) == "no scan yet since restart"
+    two_h = (now - timedelta(hours=2)).isoformat(timespec="seconds")
+    assert bot._scan_status_line({"finished_at": two_h, "ok": True, "n_new": 0}, now) == "last scan 2h ago: ok, 0 new"
+    failed = bot._scan_status_line({"finished_at": two_h, "ok": False, "n_new": 0}, now)
+    assert "FAILED" in failed and "2h ago" in failed
+
+
+def test_scheduled_scan_stamps_bot_data_on_success_and_on_failure(tmp_path, monkeypatch):
+    """The except path must stamp too -- an unstamped failure is invisible, which is the whole bug."""
+    app = _app_for_job(tmp_path, scan_interval_hours=8.0)
+    monkeypatch.setattr("matador.bot._sharp_entry_job", lambda cfg, ids: 0)
+    monkeypatch.setattr("matador.bot._scheduled_scan_job", lambda *a: ("alert\nopp #1", [1]))
+    asyncio.run(scheduled_scan_job(_FakeJobContext(app)))
+    assert app.bot_data["scan"]["ok"] is True and app.bot_data["scan"]["n_new"] == 1
+
+    def boom(*a):
+        raise RuntimeError("kalshi 403 from this IP")
+    monkeypatch.setattr("matador.bot._scheduled_scan_job", boom)
+    asyncio.run(scheduled_scan_job(_FakeJobContext(app)))
+    assert app.bot_data["scan"]["ok"] is False and app.bot_data["scan"]["finished_at"]
+
+
+def test_heartbeat_flags_bets_awaiting_result():
+    """roi is None until /result is entered, and roi >= 0 is a hard go-live co-gate."""
+    import matador.bot as bot
+    conn = _db()
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    # Kalshi's own '...Z' spelling, matching what actually lands in the column -- see storage._shift_iso
+    # on why the threshold compare depends on both sides using it.
+    def _z(dt):
+        return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+    long_done = _z(now - timedelta(hours=30))
+    just_started = _z(now - timedelta(hours=1))
+    overdue_id = _capture_opp(conn, occurrence=long_done)
+    _capture_opp(conn, occurrence=just_started)         # too recent to nag about
+    txt = bot._heartbeat_text(conn, make_cfg(), now=now)
+    assert f"awaiting /result: #{overdue_id}" in txt
+    assert "1 awaiting" in txt                           # only the >12h one
+    conn.close()
+
+
+def test_heartbeat_flags_pending_rows_with_no_start_time():
+    """schedule_pending_captures cannot arm a timer without a start, so these sit forever in silence."""
+    import matador.bot as bot
+    conn = _db()
+    oid = _capture_opp(conn, occurrence=None)
+    txt = bot._heartbeat_text(conn, make_cfg(), now=datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc))
+    assert f"NO start time (#{oid})" in txt and "/close <id> pre" in txt
+    conn.close()
+
+
+def test_heartbeat_warns_only_when_odds_credits_run_low():
+    import matador.bot as bot
+    conn = _db()
+    cfg, now = make_cfg(), datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    assert "credits low" not in bot._heartbeat_text(conn, cfg, credits=500, now=now)
+    assert "credits low" not in bot._heartbeat_text(conn, cfg, credits=None, now=now)   # never fetched yet
+    low = bot._heartbeat_text(conn, cfg, credits=12, now=now)
+    assert "credits low: 12" in low and "sharp_close goes NULL" in low
+    conn.close()
+
+
+def test_heartbeat_header_degrades_when_anything_is_wrong():
+    """The first line is all that gets read on a busy day, so it must not say OK over a broken body."""
+    import matador.bot as bot
+    conn = _db()
+    cfg, now = make_cfg(), datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    _capture_opp(conn)                                        # healthy, near-future start
+    assert bot._heartbeat_text(conn, cfg, now=now).startswith("💓 Matador OK")
+
+    failed = {"finished_at": (now - timedelta(hours=9)).isoformat(timespec="seconds"), "ok": False}
+    hdr = bot._heartbeat_text(conn, cfg, None, failed, 5, now)
+    assert hdr.startswith("🚨 Matador — 2 PROBLEM(S)")         # failed scan + low credits
+    assert "Matador OK" not in hdr
+    conn.close()
+
+
+def test_sharp_client_records_remaining_credits_for_the_heartbeat():
+    """Exhaustion is otherwise silent: fetch raises, the caller swallows, sharp_close stays NULL,
+    and the only symptom is sharp_coverage sagging under the co-gate weeks later."""
+    import matador.sharp as sharp_mod
+
+    def handler(request):
+        return httpx.Response(200, json=[], headers={"x-requests-remaining": "37"})
+    client = SharpOddsClient("K", transport=httpx.MockTransport(handler))
+    with client:
+        client.fetch_h2h("tennis_atp_cincinnati")
+    assert client.requests_remaining == 37
+    assert sharp_mod.last_requests_remaining() == 37   # survives the client being discarded
 
 
 # ---- run_scan ----

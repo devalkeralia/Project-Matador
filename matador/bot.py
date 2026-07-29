@@ -36,7 +36,7 @@ from matador.engine import (
     backed_player, evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series,
 )
 from matador.kalshi.client import KalshiClient
-from matador.sharp import SharpOddsClient, sharp_fair_for_opp
+from matador.sharp import SharpOddsClient, last_requests_remaining, sharp_fair_for_opp
 from matador.storage import (
     get_opportunity, last_opportunity, last_position, pending_captures, recent_opportunities, settled_bets,
 )
@@ -759,8 +759,12 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         text, new_ids = await asyncio.to_thread(_scheduled_scan_job, cfg, bd["model"], bd["demo"], cfg.tours)
     except Exception:
         log.exception("scheduled scan failed")
+        # Record the FAILURE too: a cycle that dies silently is the case the heartbeat exists to
+        # expose, so the except path must stamp bot_data exactly like the success path.
+        bd["scan"] = {"finished_at": _now_iso(), "ok": False, "n_new": 0}
         return
     n_new = len(new_ids)
+    bd["scan"] = {"finished_at": _now_iso(), "ok": True, "n_new": n_new}
     schedule_pending_captures(context.application)  # arm auto-capture for any freshly-logged opps
     log.info("scheduled scan complete: %d new alert(s)", n_new)
     if n_new > 0 or cfg.scan_announce:
@@ -843,19 +847,70 @@ def _model_freshness(model_path: str, today: date | None = None) -> str:
         return "model freshness unavailable"
 
 
-def _heartbeat_text(conn, cfg, drift: list[str] | None = None) -> str:
+RESULT_OVERDUE_HOURS = 12    # a match this long finished should have a /result by now
+_OVERDUE_IDS_SHOWN = 5       # cap the listed ids so the DM stays one readable message
+LOW_CREDITS_WARN = 100       # odds-api credits below this -> warn while there's still time to top up
+
+
+def _scan_status_line(scan: dict | None, now: datetime | None = None) -> str:
+    """'last scan 2h ago: ok, 0 new' / 'last scan FAILED 2h ago' / 'no scan yet since restart'.
+
+    Without this the scheduled scan can fail EVERY cycle for weeks -- a Kalshi 403 from the droplet
+    IP, TLS, schema drift -- while the heartbeat still reports 'Matador OK, N opps', which is
+    indistinguishable from a genuinely quiet market. Reported honestly after a restart rather than
+    implying a scan happened."""
+    if not scan or not scan.get("finished_at"):
+        return "no scan yet since restart"
+    when = _parse_dt(scan["finished_at"])
+    ref = now or datetime.now(timezone.utc)
+    age = f"{(ref - when).total_seconds() / 3600:.0f}h ago" if when else "at an unknown time"
+    if not scan.get("ok"):
+        return f"⚠️ last scan FAILED {age}"
+    return f"last scan {age}: ok, {scan.get('n_new', 0)} new"
+
+
+def _heartbeat_text(conn, cfg, drift: list[str] | None = None, scan: dict | None = None,
+                    credits: int | None = None, now: datetime | None = None) -> str:
     s = summarize(settled_bets(conn), cfg)
     c = s["captures"]
-    warn = f"\n⚠️ MODEL/CONFIG DRIFT ({'; '.join(drift)}) — predict() uses the ARTIFACT's values." if drift else ""
-    return (f"💓 Matador OK — {_model_freshness(cfg.model_path)}; "
-            f"{s['n_opportunities']} opps, {s['n_clv']} Kalshi-closed over {s['n_clusters']} week(s); "
-            f"captures {c['auto']}a/{c['manual']}m/{c['sharp_only']}s/{c['missed']}x; {len(pending_captures(conn))} pending; "
-            f"sharp {s['n_sharp']} pinnacle / {s['n_consensus']} consensus (coverage {s['sharp_coverage']:.0%}); "
-            f"open exposure ${storage.open_exposure(conn):.0f}." + warn)
+    lines = [
+        f"{_model_freshness(cfg.model_path)}",
+        f"{s['n_opportunities']} opps, {s['n_clv']} Kalshi-closed over {s['n_clusters']} week(s); "
+        f"open exposure ${storage.open_exposure(conn):.0f}",
+        f"captures {c['auto']}a/{c['manual']}m/{c['sharp_only']}s/{c['missed']}x "
+        f"(auto/manual/sharp-only/missed); {len(pending_captures(conn))} pending",
+        f"sharp {s['n_sharp']} pinnacle / {s['n_consensus']} consensus (coverage {s['sharp_coverage']:.0%})",
+        _scan_status_line(scan, now),
+    ]
+    overdue = storage.awaiting_result(conn, _now_iso() if now is None else now.isoformat(timespec="seconds"),
+                                     RESULT_OVERDUE_HOURS)
+    if overdue:
+        ids = ", ".join(f"#{r['id']}" for r in overdue[:_OVERDUE_IDS_SHOWN])
+        more = f" (+{len(overdue) - _OVERDUE_IDS_SHOWN} more)" if len(overdue) > _OVERDUE_IDS_SHOWN else ""
+        # Not cosmetic: roi is None until these are entered, and roi >= 0 is a hard go-live co-gate.
+        lines.append(f"📝 {len(overdue)} awaiting /result: {ids}{more}")
+    untimed = storage.untimed_pending(conn)
+    if untimed:
+        ids = ", ".join(f"#{r['id']}" for r in untimed[:_OVERDUE_IDS_SHOWN])
+        lines.append(f"⚠️ {len(untimed)} pending with NO start time ({ids}) — never auto-captures; "
+                     f"run /close <id> pre")
+    if credits is not None and credits < LOW_CREDITS_WARN:
+        lines.append(f"⚠️ odds-api credits low: {credits} left — sharp_close goes NULL when they run out")
+    if drift:
+        lines.append(f"⚠️ MODEL/CONFIG DRIFT ({'; '.join(drift)}) — predict() uses the ARTIFACT's values.")
+    # The HEADER must degrade with the body. "Matador OK" on a message whose 5th line says the scan
+    # has been failing for 9h is how a silent outage survives 84 daily DMs -- the owner reads the
+    # first line and moves on. Any warning demotes the header.
+    problems = sum(1 for line in lines if line.startswith("⚠️"))
+    header = "💓 Matador OK — " if not problems else f"🚨 Matador — {problems} PROBLEM(S) below — "
+    return header + "\n".join(lines)
 
 
-def _heartbeat_job(cfg, drift: list[str] | None = None) -> str:
-    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg, drift))
+def _heartbeat_job(cfg, drift: list[str] | None = None, scan: dict | None = None,
+                   credits: int | None = None) -> str:
+    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg, drift, scan, credits))
+
+
 
 
 async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -863,7 +918,8 @@ async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     long-poll / token conflict otherwise looks identical to a quiet market for days."""
     bd = context.bot_data
     try:
-        msg = await asyncio.to_thread(_heartbeat_job, bd["cfg"], bd.get("drift"))
+        msg = await asyncio.to_thread(_heartbeat_job, bd["cfg"], bd.get("drift"),
+                                      bd.get("scan"), last_requests_remaining())
     except Exception:
         log.exception("heartbeat failed")
         return

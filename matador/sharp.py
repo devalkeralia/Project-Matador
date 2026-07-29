@@ -73,6 +73,24 @@ def sport_key(tour: str, competition: str | None) -> str | None:
     return None
 
 
+_LAST_REMAINING: int | None = None   # last x-requests-remaining seen by ANY client this process
+
+
+def _remember_remaining(value: int) -> int:
+    global _LAST_REMAINING
+    _LAST_REMAINING = value
+    return value
+
+
+def last_requests_remaining() -> int | None:
+    """Credits left on the odds-api plan as last observed, or None if no call has succeeded yet.
+
+    Module-level on purpose: sharp clients are built per-job and thrown away (see bot._sharp_client),
+    so an instance attribute alone would never reach the daily heartbeat. This is a monitoring
+    read-out of an external counter, not state anything decides on."""
+    return _LAST_REMAINING
+
+
 class SharpOddsClient:
     """Read-only the-odds-api v4 client (tennis h2h). Mirrors KalshiClient's httpx wrapper; short
     timeout so a slow sharp read can't blow the pre-match capture window."""
@@ -83,6 +101,12 @@ class SharpOddsClient:
         self._api_key = api_key
         self._region = region
         self.consensus_fallback = consensus_fallback  # carried on the client so callers needn't thread cfg
+        # Credits left on the odds-api plan, from the last response's x-requests-remaining (None until
+        # a call succeeds). Surfaced in the heartbeat because exhaustion is SILENT where it matters:
+        # fetch_h2h raises, sharp_fair_for_opp swallows it, sharp_close stays NULL, and the only
+        # symptom is sharp_coverage sagging under the 0.5 co-gate weeks later -- by which time those
+        # bets are permanently sharp-less and the gate is unreadable.
+        self.requests_remaining: int | None = None
         self._client = httpx.Client(base_url=base_url, timeout=timeout, transport=transport)
 
     def close(self) -> None:
@@ -109,6 +133,10 @@ class SharpOddsClient:
             remaining = resp.headers.get("x-requests-remaining")
             if remaining is not None:
                 log.info("the-odds-api %s: %s credits remaining", sport_key, remaining)
+                try:
+                    self.requests_remaining = _remember_remaining(int(float(remaining)))
+                except (TypeError, ValueError):
+                    pass
             data = resp.json()
             return data if isinstance(data, list) else []
         return []

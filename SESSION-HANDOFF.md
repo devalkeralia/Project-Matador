@@ -73,10 +73,10 @@ Still open, in the order I'd take them:
 - **#5** refresh shrink-guard + degradation warnings + a build stamp in `model.json` — safe (warn-only
   and metadata; verified `Model.from_artifact` ignores unknown top-level keys, so a stamp can't change
   a prediction).
-- **#6** two verifiable doc traps (the stale deploy-key teardown step; a warning never to run
-  `scripts/bot.py` locally on the prod token while the droplet is up — two long-pollers 409 and the
-  droplet goes silent). The third part needs the DO console: the backup frequency contradiction at
-  `DEPLOY.md:54` (daily/~14-day vs weekly/4-week) — **owner must check which is actually enabled.**
+- ~~**#6** doc traps~~ — **DONE.** Backups confirmed in the DO console as usage-based, **weekly, 4-week
+  retention** (so `DEPLOY.md:54`'s "daily/~14-day" was the wrong side of the contradiction; the real
+  7-day RPO is now stated). Stale deploy-key teardown step removed. The two-poller 409 warning added to
+  DEPLOY §8 + the README policy.
 - **#9** the three week-12 analyses in `clv_report` — deferred on purpose, equally cheap at the read.
 - **#10** auto-record settlement — the biggest ops saver but the only unattended writer to the live
   sample; needs Kalshi retirement/walkover behaviour verified live first.

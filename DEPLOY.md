@@ -51,9 +51,15 @@ none of Hetzner's Console/Robot/konsoleH split to navigate.
 > then destroy the droplet; also check **Networking → Reserved IPs**, since an unassigned reserved IP
 > bills on its own (we don't use one, but check).
 
-**Backups: enabled 2026-07-28, USAGE-BASED, daily, ~14-day retention.** Worth having at all because
-`data/matador.db` accumulates the project's only clean forward instrument, cannot be reconstructed, and
-automated backups need no weekly discipline.
+**Backups: enabled 2026-07-28, USAGE-BASED, WEEKLY, 4-week retention** (confirmed in the DO console
+2026-07-29; this line previously said "daily, ~14-day retention", which contradicted the step-1 table
+below and overstated the RPO). Worth having at all because `data/matador.db` accumulates the project's
+only clean forward instrument, cannot be reconstructed, and automated backups need no weekly discipline.
+
+**So the real RPO is up to 7 days.** That matters when you are actually recovering: restoring a DO
+backup can cost you a week of bets, which is a week of extra runtime rather than an invalidated sample
+(the gate counts bets and week-clusters). The weekly `matador.db` attached to the refresh DM is the
+tighter instrument — prefer it for sample recovery, and use the DO backup for rebuilding the box.
 
 Choose **usage-based over plan-based**: plan-based charges a flat 20% of the droplet (~$1.20/mo)
 regardless of usage, while usage-based charges per GiB of *restorable size* — observed at **$0.04/GiB,
@@ -308,7 +314,16 @@ days, so a stalled feed is visible even if a DM is missed.
 
 ## 8. During the run
 
-- A **daily heartbeat DM** arrives — a silent outage otherwise looks exactly like "no edge".
+- 🛑 **NEVER run `scripts/bot.py` on your laptop with the production `TELEGRAM_TOKEN` while the droplet
+  is up.** Telegram allows one long-poller per token: the second one 409-conflicts and **the droplet's
+  bot goes silent** while its container still looks perfectly healthy — no crash, no restart, nothing in
+  `docker compose ps`. This is the likeliest self-inflicted outage here, and it is exactly what the
+  natural debugging instinct ("let me run it locally and poke at it") causes. To try things locally, use
+  a SEPARATE BotFather token, or stop the droplet container first. The dead-man's switch
+  (`HEALTHCHECK_URL`) is the only mechanism that catches this one, because the pings stop when the DM
+  stops.
+- A **daily heartbeat DM** arrives — a silent outage otherwise looks exactly like "no edge". Its header
+  reads `🚨 Matador — N PROBLEM(S) below` when anything is wrong, so the first line is enough.
 - `docker compose logs --since 24h matador` for a quick health read.
 - `docker compose run --rm --entrypoint python matador scripts/clv_report.py` for the segmented
   CLV report, including the **layoff axis** (the pre-registered decay instrument — see
@@ -330,7 +345,9 @@ scp matador@<droplet-ip>:~/matador/logs/matador.log ~/matador-final.log
 
 2. DO console → droplet → **Destroy**. Then check **Networking → Reserved IPs** — an unassigned
    reserved IP bills on its own (we don't create one, but confirm).
-3. Remove the deploy key from the GitHub repo (Settings → Deploy keys).
+3. Revoke nothing on GitHub: step 3 clones over **HTTPS**, so there is no deploy key and no credential
+   on the box to clean up. (This step used to say "remove the deploy key", which sent you hunting for
+   something that never existed.)
 
 Read the final verdict off the backed-up DB locally with
 `.venv/bin/python scripts/clv_report.py` (point `db_path` at the copy).

@@ -264,6 +264,10 @@ markets where the gate thresholds are meaningful.
     call away from silent contamination. Verified end-to-end against live Kalshi (full alert rendered,
     `rows before 6 after 6`). **During the run: `/preview`, `/find`, `/stats`, `/recent`, `/notes` are
     safe; `/result` and `/close` are required for the gate to be readable; avoid `/check` and `/scan`.**
+    And **never start a second bot on the production token** — running `scripts/bot.py` locally while
+    the droplet is up 409-conflicts Telegram's one-poller-per-token rule and silently kills the
+    droplet's poller while its container still looks healthy. Use a separate BotFather token to
+    experiment. See DEPLOY.md §8.
   - Deploy runbook is [`DEPLOY.md`](./DEPLOY.md). Deviations applied vs the written steps: a NOPASSWD
     sudoers drop-in (`--disabled-password` + `sudo` was unusable), neutralising `sshd_config.d/*.conf`
     password-auth overrides, the swapfile, HTTPS clone instead of a deploy key (the repo is public),

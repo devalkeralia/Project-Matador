@@ -3,8 +3,8 @@
 Produced by an adversarial multi-agent improvements pass (Fable 5, 5 lenses -> ruthless prioritiser):
 **34 raw ideas -> 11 do-now, 4 after-gate, 2 needs-data, 7 rejected.**
 
-**Status 2026-07-29: 7 of the 11 do-now items are APPLIED** (#1, #2, #3, #4, #7, #8, #11 — each struck
-through below with what was actually done). Remaining: #5 and #6 (small, safe), #9 (deferred by
+**Status 2026-07-29: 8 of the 11 do-now items are APPLIED** (#1, #2, #3, #4, #6, #7, #8, #11 — each
+struck through below with what was actually done). Remaining: #5 (small, safe), #9 (deferred by
 choice — it is needed *at* the week-12 read and is just as cheap then), and #10 (deliberately separate:
 the only item that writes to the live sample unattended, so it needs Kalshi's retirement/walkover
 settlement behaviour verified live first).
@@ -173,7 +173,17 @@ prediction.
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/scripts/prepare_matches.py fetch() (~88) and prepare() (~141); /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/scripts/refresh_notify.py build_message(); /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/scripts/build_ratings.py main() (~98)`
 
-### 6. Fix three read-under-stress doc traps (two are NEW incidental doc defects)  _[small]_
+### 6. ~~Fix three read-under-stress doc traps~~ — **DONE 2026-07-29**
+
+**Done, all three.** (1) The backup contradiction is resolved by CHECKING rather than picking a variant:
+the owner confirmed the DO console reads usage-based, **weekly, 4-week retention**, so DEPLOY.md's
+"daily, ~14-day" line was the wrong one — corrected, and the real 7-day RPO is now spelled out with its
+consequence (prefer the weekly `matador.db` DM for sample recovery; the DO backup is for rebuilding the
+box). (2) The stale "remove the deploy key" teardown step is gone — step 3 clones over HTTPS and there
+has never been a key to remove. (3) The two-poller 409 warning is now in DEPLOY §8 and the README
+command policy, named as the likeliest self-inflicted outage, pointing at the dead-man's switch as the
+only mechanism that detects it. Original entry below.
+
 
 **What.** (1) DEPLOY.md line 54 says backups are 'USAGE-BASED, daily, ~14-day retention' while the very next
 paragraph and the step-1 table say weekly frequency / retention in weeks / '4 weeks' / '$0.04/GiB,

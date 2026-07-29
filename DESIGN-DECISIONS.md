@@ -527,6 +527,44 @@ rule, never a per-event ticker (`KXATP-26WIM` etc.), so it generalises to every 
 tournament final. Confirmed live against **both** Wimbledon 2026 finals — `KXATP` (Sinner–Zverev)
 and `KXWTA` (Muchova–Noskova); `/find` surfaced them as the only model-priceable open matches.
 
+## Week-12 read protocol — PRE-REGISTERED 2026-07-29, before the sample matured
+
+Written **deliberately in advance**, while the sample stood at 11 bets, because every rule below is
+worthless if authored after seeing the number it governs. Twelve weeks of watching a figure hover
+near a 1.5¢ bar, with the CI recomputable at every `/stats` call, is precisely the setting in which a
+lucky peek green-lights real money. **Any deviation from this protocol must be written down here
+BEFORE the read, with its reason.**
+
+**The read.** Read the gate **ONCE**, at ISO week ≥ 12 with `n_sharp` ≥ 200, exactly as
+`clv.summarize` computes `go_live` — all six conditions (sharp BCa lower bound > `min_effect_size`,
+≥ 200 Pinnacle-referenced bets, ≥ 12 week clusters, `sharp_coverage` ≥ 0.5, realized net-ROI ≥ 0,
+missed-capture ≤ 0.30). **No substitute metric.** If a different statistic looks better, that is not
+the gate; it is a segment (see below).
+
+**`/stats` peeks are monitoring, not decisions.** They exist to catch ops failures. A favourable peek
+**cannot** trigger an early go-live, and the run **must not** be stopped early on one.
+
+**Exploratory segments — may be looked at, cannot gate.** Price band, experience, event/tier,
+staleness. All are hypothesis-generating only, with one exception: the layoff-decay criteria already
+pre-registered in "Layoff / inactivity". Finding a positive slice inside a failed overall gate is
+**not** a pass, and **extending the run to hunt for one is banned.**
+
+**Stopping rule, fixed now:**
+- Sharp CLV ≤ 0 **and** informational Kalshi CLV ≤ 0 on a full sample → **STOP.** No lever cascade;
+  that combination says the model class is the problem ([[underdog-over-rating]] is the mechanism).
+- Kalshi CLV positive but the **sharp** gate missed → exactly **ONE** lever: the K floor, with its
+  pass bar written into this file *before* it is fitted (see IMPROVEMENTS after-gate #1).
+- `sharp_coverage` < 0.5 → an **ops failure, not an answer.** The verdict is "no answer": fix the
+  coverage and extend. Do not read it as "the answer is no".
+
+**`clv_report` robustness numbers are veto-only.** Single-week concentration and the drop-the-largest-
+week lower bound can **block** a go-live; they can never authorize one.
+
+**Caveats the reader must carry into the read.** Closes are captured at T−5min of *scheduled* start,
+so a late-starting match understates late drift; and the missed-capture set is **non-random** (thin
+books and postponed matches are over-represented), so the captured sample is mildly optimistic about
+book quality. Both bias toward a friendlier number than reality.
+
 ## Open items & deferred work (as of Phase 5, 2026-07-13)
 
 Phases 1–5 are built (data plumbing → surface-Elo model → edge/staking engine → Telegram bot +
@@ -592,7 +630,11 @@ bets across live tournaments; `/stats` reports the net-of-fee gate.
   contracts). **Recalibrate definitively on the August Masters** (Toronto/Cincinnati) from the
   observed liquid distribution.
 - Re-evaluate cold-start shrinkage `n0` (0 vs 10) via CLV segmented by player match-count.
-- **Model-improvement levers, if forward CLV is flat** (v1 is plain *career* Elo, no time-weighting):
+- **Model-improvement levers, if forward CLV is flat** (v1 is plain *career* Elo, no time-weighting).
+  **SUPERSEDED (2026-07-27) on which lever goes first:** the **K floor** now ranks ahead of recency
+  Elo — see "Underdog over-rating" for the implied-Elo-error-by-experience evidence, and note that a
+  floored K already *is* exponential recency-weighting for high-n players. Recency Elo has no direct
+  in-repo measurement. The original text follows for context:
   the first lever is **recency / time-decayed Elo** — down-weight matches by age so old results and
   bygone eras fade (this, not dropping players, is the right fix for "stale/retired-era data
   over-weights"). **Do NOT drop retired players from the rating build:** Elo is a chain, so their

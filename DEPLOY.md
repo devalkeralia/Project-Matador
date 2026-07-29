@@ -140,13 +140,24 @@ adduser --disabled-password --gecos "" matador     # gets uid 1000 -> matches th
 usermod -aG sudo matador
 mkdir -p /home/matador/.ssh && cp ~/.ssh/authorized_keys /home/matador/.ssh/
 chown -R matador:matador /home/matador/.ssh && chmod 700 /home/matador/.ssh
+chmod 600 /home/matador/.ssh/authorized_keys
 
-# key-only SSH, no root login
-sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/;s/^#*PasswordAuthentication.*/PasswordAuthentication no/' \
-  /etc/ssh/sshd_config
-systemctl restart ssh
+# REQUIRED: --disabled-password + sudo group is unusable on its own -- sudo would prompt for a
+# password that does not exist. The passphrase-less SSH key is already the only auth, so NOPASSWD
+# costs nothing: whoever holds the key owns the box regardless.
+echo "matador ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-matador
+chmod 440 /etc/sudoers.d/90-matador
+visudo -c                        # validate before trusting it
 
 timedatectl set-timezone UTC     # cron and occurrence_datetime both assume UTC -- do not skip
+
+# 2 GB swap: OOM guard for the weekly refresh, which runs build_ratings in a SECOND container while
+# the bot is up. Measured afterwards: the bot uses only ~137 MB and swap stayed at 0, so this is
+# insurance rather than a fix -- but an OOM mid-refresh fails SILENTLY (the model just stops
+# advancing), and the margin erodes as the DB and logs grow.
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+sysctl -w vm.swappiness=10 && echo 'vm.swappiness=10' >> /etc/sysctl.conf
 
 # Docker (official apt repo)
 apt-get update && apt-get install -y ca-certificates curl gnupg git
@@ -162,36 +173,62 @@ usermod -aG docker matador
 ufw default deny incoming && ufw default allow outgoing && ufw allow 22/tcp && ufw --force enable
 ```
 
-Reconnect as `matador` from here on. `id -u` must print **1000** — the container runs as uid 1000, so
-a mismatch makes the writable mounts fail (README documents the `user:` escape hatch if it differs).
+**Now verify `matador` can log in AND use sudo/docker BEFORE locking down root** — otherwise a mistake
+locks you out of your own box:
+
+```bash
+# from the laptop
+ssh matador@<droplet-ip> 'id -u; docker ps >/dev/null && echo docker-ok; sudo -n true && echo sudo-ok'
+```
+
+`id -u` must print **1000** — the container runs as uid 1000, so a mismatch makes the writable mounts
+fail (README documents the `user:` escape hatch if it differs). Only once that passes, as root:
+
+```bash
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/;s/^#*PasswordAuthentication.*/PasswordAuthentication no/' \
+  /etc/ssh/sshd_config
+# DO images often drop an override in sshd_config.d/ that RE-ENABLES password auth -- editing only
+# sshd_config silently leaves it on. Neutralise any override, then trust `sshd -T`, not the files.
+for f in /etc/ssh/sshd_config.d/*.conf; do [ -e "$f" ] || continue
+  sed -i 's/^\s*PasswordAuthentication.*/PasswordAuthentication no/I;s/^\s*PermitRootLogin.*/PermitRootLogin no/I' "$f"
+done
+sshd -t && systemctl restart ssh
+sshd -T | grep -Ei '^(permitrootlogin|passwordauthentication|pubkeyauthentication)'
+```
+
+Then confirm from the laptop that root is refused and `matador` still works.
 
 ## 3. Get the repo and the three ignored things onto the box
 
-The repo is private, so use a **read-only deploy key** — no PAT on the server:
+The repo is **public**, so clone over HTTPS — **no deploy key and no credential on the server at all**
+(this is why the visibility check in `CLAUDE.md` matters). As `matador`:
 
 ```bash
-ssh-keygen -t ed25519 -C "matador-vps" -f ~/.ssh/id_ed25519 -N ""
-cat ~/.ssh/id_ed25519.pub
-# GitHub -> Project-Matador -> Settings -> Deploy keys -> Add, paste, leave "Allow write access" OFF
-git clone git@github.com:devalkeralia/Project-Matador.git ~/matador
+git clone https://github.com/devalkeralia/Project-Matador.git ~/matador
+cd ~/matador && mkdir -p data logs   # pre-create so they're owned by you, not root (see step 0 risk)
 ```
 
-**`config.yaml`, `secrets/`, and `data/` are gitignored — the clone does NOT include them.** Push the
-first two from your laptop (never commit them):
+> **BLOCKING: push local work first.** The droplet builds its model from whatever `origin/main` has.
+> Confirm the clone carries current values, e.g.
+> `grep -E "min_price: float|shrinkage_n0: float" matador/config.py` → **0.20 / 0.0**. A stale clone
+> silently builds the model with the old shrinkage.
+
+**`config.yaml`, `secrets/`, and `data/` are gitignored — the clone does NOT include them.** Copy the
+first two from your laptop, from the repo root (relative paths), and **transfer only the secrets the
+bot actually references** rather than the whole directory — `secrets/` also holds GitHub PATs that have
+no business on an internet-facing box:
 
 ```bash
-# from the local repo root
+ssh matador@<droplet-ip> 'mkdir -p ~/matador/secrets && chmod 700 ~/matador/secrets'
 scp config.yaml matador@<droplet-ip>:~/matador/config.yaml
-scp -r secrets   matador@<droplet-ip>:~/matador/          # .env + kalshi pem + odds_api_key.txt
+scp secrets/.env secrets/odds_api_key.txt secrets/kalshi_private_key.pem \
+    matador@<droplet-ip>:~/matador/secrets/
+ssh matador@<droplet-ip> 'chmod 600 ~/matador/secrets/*'
 ```
 
-Then on the server:
-
-```bash
-cd ~/matador
-chmod 700 secrets && chmod 600 secrets/*
-mkdir -p data logs        # pre-create so they're owned by you, not root (README explains why)
-```
+Verify with `ls -la secrets/` — plain `ls` hides `.env`. The Kalshi `.pem` is validated as a config
+string but **never read** (`matador/bot.py` builds `KalshiClient` with no signer); it's copied for
+completeness.
 
 ## 4. Verify Kalshi is reachable FROM THIS BOX — before going further
 

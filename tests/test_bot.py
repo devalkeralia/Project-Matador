@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from matador.bot import (
+    CAPTURE_LATE_GRACE,
+    RESCHEDULE_EPSILON,
     auto_capture,
     build_application,
     capture_close,
@@ -704,6 +706,74 @@ def make_reconcile_client(status="active", occurrence="2099-01-01T00:00:00Z",
                                                         "occurrence_datetime": occurrence}})
         raise AssertionError(f"unexpected {request.url}")
     return KalshiClient(base_url="https://x/trade-api/v2", transport=httpx.MockTransport(handler))
+
+
+# ---- capture-timing guards: the only defence against recording an IN-PLAY price as the "close" ----
+
+_GRACE_START = datetime(2026, 8, 10, 13, 0, tzinfo=timezone.utc)   # a fixed, unambiguous scheduled start
+
+
+def test_capture_timing_constants_are_pinned_tight():
+    """Pinned ABSOLUTELY, on purpose.
+
+    Kalshi trades tennis in-play and the market stays 'active' right through the match, so status
+    cannot distinguish pre-match from in-play -- a tight grace is the only real guard. Widening
+    CAPTURE_LATE_GRACE to 12h, or RESCHEDULE_EPSILON to a day, used to pass the entire suite, because
+    the only 'late' test was months late and every reschedule test moved starts by months. A
+    partially-resolved 'close' is poison in the BINDING metric and invisible until the gate is read.
+
+    Asserting the values (not just relative behaviour) is deliberate: a test written as
+    `start + CAPTURE_LATE_GRACE + 1min` scales with the constant and would stay green if it widened.
+    """
+    assert CAPTURE_LATE_GRACE == timedelta(minutes=5)
+    assert RESCHEDULE_EPSILON == timedelta(minutes=2)
+
+
+@pytest.mark.parametrize("minutes_late,expect_capture", [(4, True), (6, False)])
+def test_capture_close_grace_boundary(minutes_late, expect_capture):
+    """4 minutes past start still captures; 6 minutes past is a miss, not a snapshot."""
+    conn = _db()
+    oid = _capture_opp(conn, occurrence=_GRACE_START.isoformat())
+    with make_capture_client() as client:
+        r = capture_close(client, conn, oid, source="auto",
+                          now=_GRACE_START + timedelta(minutes=minutes_late))
+    row = conn.execute("SELECT closing_price, closing_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    if expect_capture:
+        assert r["ok"] and r["closing_price"] == pytest.approx(0.475)
+        assert row["closing_source"] == "auto"
+    else:
+        assert not r["ok"] and r["reason"] == "too_late"
+        assert row["closing_price"] is None and row["closing_source"].startswith("missed")
+    conn.close()
+
+
+@pytest.mark.parametrize("shift_minutes,action", [(-30, "captured"), (30, "rescheduled")])
+def test_auto_capture_handles_a_realistic_half_hour_court_shuffle(shift_minutes, action):
+    """A 30-minute move -- the realistic case (a reordered court), not the months-apart fixtures.
+
+    Moved EARLIER by 30min with now = stored-5min: the match is already 25 minutes in, so the stored
+    time must be corrected and the row MISSED rather than captured at an in-play price. Moved LATER,
+    it is still pre-match, so re-arm. Under a day-wide RESCHEDULE_EPSILON neither move registers at
+    all and the stored time is silently left wrong.
+    """
+    stored = _GRACE_START
+    live = stored + timedelta(minutes=shift_minutes)
+    now = stored - timedelta(minutes=5)
+    conn = _db()
+    oid = _capture_opp(conn, occurrence=stored.isoformat())
+    with make_reconcile_client(occurrence=live.isoformat()) as client:
+        res = auto_capture(client, conn, oid, now=now)
+    assert res["action"] == action
+    row = conn.execute("SELECT occurrence_datetime FROM opportunities WHERE id=?", (oid,)).fetchone()
+    assert row["occurrence_datetime"] == live.isoformat()          # corrected in BOTH directions
+    out = conn.execute("SELECT closing_price, closing_source FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    if action == "captured":
+        assert res["result"]["reason"] == "too_late"               # 25 min in -> refuse, don't snapshot
+        assert out["closing_price"] is None and out["closing_source"].startswith("missed")
+    else:
+        assert out is None                                        # nothing recorded; the row stays pending
+        assert [r["id"] for r in pending_captures(conn)] == [oid]
+    conn.close()
 
 
 def test_auto_capture_reschedules_on_postponement():

@@ -38,9 +38,45 @@ def test_bootstrap_ci_none_on_empty():
     assert bootstrap_mean_ci([], [], seed=0) is None
 
 
+def test_bca_adjusts_the_interval_on_right_skewed_clv_and_is_pinned():
+    """The bias-correction + acceleration must actually RUN, and its numbers are pinned.
+
+    Why pinned: replacing clv._NORM with a garbage stub (inv_cdf=-99, cdf=0.999) used to pass the
+    whole suite, because every other call reaches the <4-cluster or degenerate fallback -- so the
+    machinery that produces the interval authorizing real money was dead code under test. BCa exists
+    precisely because CLV is right-skewed (a few big winners), which is what this fixture is.
+
+    A golden value catches any sign/transcription change in z0 or the acceleration. It CANNOT catch a
+    conceptual error shared by the implementation and this expectation -- for that, the guard is the
+    'differs from the plain percentile' assertion plus the derivation in bootstrap_mean_ci's docstring.
+    """
+    big = [0.05, 0.10, 0.20, 0.35, 0.06, 0.12, 0.25, 0.40]   # one big winner per week, varying size
+    vals, clusters = [], []
+    for w, b in enumerate(big):
+        for j in range(5):
+            vals.append(0.002 + 0.001 * j)       # a mass of near-zero CLVs ...
+            clusters.append(f"2026-W{w + 1:02d}")
+        vals.append(b)                           # ... plus the skew
+        clusters.append(f"2026-W{w + 1:02d}")
+
+    bca = bootstrap_mean_ci(vals, clusters, n_boot=2000, seed=0)
+
+    import matador.clv as clv_mod
+    saved = clv_mod._BCA_MIN_CLUSTERS
+    clv_mod._BCA_MIN_CLUSTERS = 99               # force the plain-percentile path, SAME rng stream
+    try:
+        plain = bootstrap_mean_ci(vals, clusters, n_boot=2000, seed=0)
+    finally:
+        clv_mod._BCA_MIN_CLUSTERS = saved
+
+    assert bca != plain and bca[0] != plain[0] and bca[1] != plain[1]  # the correction moved BOTH bounds
+    assert bca[0] == pytest.approx(0.022708, abs=1e-6)                 # golden: 8 clusters, seed 0, n_boot 2000
+    assert bca[1] == pytest.approx(0.050625, abs=1e-6)
+
+
 def _cfg():
     from matador.config import Config
-    return Config(bankroll=1000.0, min_liquidity=10.0, max_spread=0.10)  # fee 0.07, min_effect 0.005, 30 clusters, thin 50
+    return Config(bankroll=1000.0, min_liquidity=10.0, max_spread=0.10)  # fee 0.07, min_effect 0.015, 12 ISO weeks, thin 50
 
 
 def _bet(**o):
@@ -169,3 +205,63 @@ def test_summarize_clv_entry_is_the_alert_price_not_the_fill():
     bets = [_bet(price=0.50, fill_price=0.55, contracts_filled=100, closing_price=0.56, result="win")]
     s = summarize(bets, _cfg(), seed=0)
     assert s["mean_gross_clv"] == pytest.approx(0.06)  # 0.56 - 0.50 (alert), not 0.56 - 0.55 (fill)
+
+
+# ---- the go-live gate at its boundaries (the one boolean the whole run exists to produce) ----
+
+_FEE = 0.07
+
+
+def _gate_sample(*, n_sharp=210, n_weeks=12, net=0.04, n_kalshi_only=30, fills=True, entry=0.50):
+    """A near-miss go-live sample where the two CLV tracks DIVERGE (n_sharp != n_clv).
+
+    Divergence is the point: in every earlier gate test the tracks were perfectly aliased, so a gate
+    that counted the CIRCULAR Kalshi-close rows instead of the Pinnacle rows was indistinguishable
+    from the real one. `net` is the per-bet SHARP net CLV, so sharp_close is derived by adding back
+    the entry-fee drag the metric subtracts.
+    """
+    from datetime import date, timedelta
+    drag = _FEE * entry * (1.0 - entry)
+    monday = date(2026, 1, 5)
+    weeks = [(monday + timedelta(days=7 * i)).isoformat() for i in range(n_weeks)]
+    bets = []
+    for i in range(n_sharp):
+        jitter = net + ((i % 5) - 2) * 0.004        # varied CLVs -> the bootstrap does real work
+        close = entry + jitter + drag
+        # A winning majority of recorded fills: at 50c the round-up fee makes a 50/50 book ROI-negative,
+        # and roi >= 0 is a hard co-gate, so an even split would fail the base case for the wrong reason.
+        fill = dict(fill_price=entry, contracts_filled=10, result="loss" if i % 5 == 0 else "win") if fills and i < 20 else {}
+        bets.append(_bet(price=entry, sharp_close=close, sharp_source="pinnacle",
+                         closing_price=close, closing_source="auto",
+                         occurrence_datetime=f"{weeks[i % n_weeks]}T13:00:00Z", **fill))
+    for i in range(n_kalshi_only):                  # Kalshi-closed, NO sharp ref -> inflates n_clv only
+        bets.append(_bet(price=entry, closing_price=entry + 0.10, closing_source="auto",
+                         occurrence_datetime=f"{weeks[i % n_weeks]}T13:00:00Z"))
+    return bets
+
+
+def test_go_live_true_on_a_qualifying_sample():
+    """The anchor. Without a sample that genuinely PASSES, every False assertion below is vacuous."""
+    s = summarize(_gate_sample(), _cfg(), seed=0)
+    assert s["go_live"] is True
+    assert s["n_sharp"] == 210 and s["n_clv"] == 240      # the tracks DIVERGE
+    assert s["n_sharp_clusters"] == 12 and s["roi"] > 0
+
+
+@pytest.mark.parametrize("label,kwargs,expect", [
+    # 199 Pinnacle bets, but 229 Kalshi-closed rows: fails ONLY on the sharp floor. Kills both
+    # "delete the >=200 floor" and "count the circular Kalshi rows instead".
+    ("one bet short of the sharp floor", dict(n_sharp=199), dict(n_sharp=199, n_clv=229)),
+    # Positive sharp CLV but under the 1.5c effect bar -- the CI lower bound stays ABOVE zero, so a
+    # gate weakened to "> 0" would pass this. This is the lucky-looking near miss the bar exists for.
+    ("positive but under the effect bar", dict(net=0.008), dict(n_sharp=210)),
+    ("one week short of the cluster floor", dict(n_weeks=11), dict(n_sharp_clusters=11)),
+    ("no recorded fills -> roi is None", dict(fills=False), dict(roi=None)),
+])
+def test_go_live_false_at_each_boundary(label, kwargs, expect):
+    s = summarize(_gate_sample(**kwargs), _cfg(), seed=0)
+    assert s["go_live"] is False, label
+    for key, want in expect.items():
+        assert s[key] == want, f"{label}: {key}"
+    if "net" in kwargs:                    # the near-miss is genuinely positive, just not big enough
+        assert 0.0 < s["sharp_ci"][0] < _cfg().min_effect_size

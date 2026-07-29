@@ -163,8 +163,11 @@ def test_log_opportunity_dedups_unless_forced():
     assert first == 1
     assert get_opportunity(conn, first)["market_ticker"] == "KXATPMATCH-26JUL04AB-A"
 
-    assert log_opportunity(conn, _opp()) is None          # same (market_ticker, side) -> deduped
-    assert log_opportunity(conn, _opp(side="no")) == 2    # different side -> logged
+    # Deduped on the ECONOMIC POSITION (event_ticker + backed player), NOT (market_ticker, side) --
+    # see storage.last_position. Flipping to 'no' on the same market backs the OPPONENT, which is a
+    # genuinely different position, so it logs; it is not evidence that 'side' is part of the key.
+    assert log_opportunity(conn, _opp()) is None          # same position (Player Aaa) -> deduped
+    assert log_opportunity(conn, _opp(side="no")) == 2    # backs Player Bbb instead -> a NEW position
     assert log_opportunity(conn, _opp(), force=True) == 3  # forced -> logged
     conn.close()
 

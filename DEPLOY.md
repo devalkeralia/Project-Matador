@@ -100,7 +100,7 @@ and the `secrets/` you'll copy both live on the WSL side.
 | **Authentication** | **SSH Key** → add `matador-vps` | Choose SSH key, **not** password. Paste `~/.ssh/id_ed25519.pub`. If DO emails you a root password, the key didn't attach — stop and fix it. |
 | **Improved metrics monitoring** | ✅ enable | Free, tiny agent, gives CPU/RAM graphs and lets you set alerts. Worth having when the box runs unattended for months — a silent outage otherwise looks like "no edge". |
 | **IPv6** | ❌ **leave OFF** | Free, so disabling saves nothing — this is outbound reliability. Dual-stack makes Python walk `getaddrinfo` order and wait out a stalled connect, which fights `SharpOddsClient`'s deliberate **5 s** timeout and can silently cost the sharp reference the go-live gate binds on. We run **no inbound services**, and all four dependencies (Kalshi, Telegram, the-odds-api, GitHub) are IPv4-reachable. |
-| **Backups** | ❌ off | Paid; see the backup note above. |
+| **Backups** | ✅ **usage-based, weekly** | ~$0.20/mo at our ~5 GB footprint, vs $1.20 plan-based — see the backup note in step 0 for why it's worth enabling at all and why usage-based wins. |
 | **User data / cloud-init** | empty | Step 2 could go here, but a cloud-init failure means debugging a boot log instead of watching a command fail interactively. |
 | **VPC / Private networking** | default, ignore | For droplet-to-droplet traffic; we have one box. |
 | **Hostname** | `matador` | Becomes the shell prompt once you SSH in — a cheap guard against running something destructive while thinking you're on your laptop. Letters, digits, hyphens only. |
@@ -283,15 +283,28 @@ Pending closing-line captures rebuild from the DB on startup, so a restart loses
 
 ## 7. Weekly model refresh (cron)
 
-`crontab -e` as `matador`. One toolchain — no host venv:
+`crontab -e` as `matador`. The work lives in a committed script so it is version-controlled and the
+notification can fire unconditionally:
 
 ```cron
-0 6 * * 1 cd /home/matador/matador && docker compose run --rm --entrypoint python matador scripts/prepare_matches.py --fetch >> logs/refresh.log 2>&1 && docker compose run --rm --entrypoint python matador scripts/build_ratings.py >> logs/refresh.log 2>&1 && docker compose restart matador >> logs/refresh.log 2>&1
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 6 * * 1 /home/matador/matador/scripts/weekly_refresh.sh >> /home/matador/matador/logs/refresh.log 2>&1
 ```
 
-**Check `logs/refresh.log` after the first Monday.** Two things to confirm: `latest` advanced
-week-over-week, and no `rejected` warning. A refresh that stops advancing silently freezes the model
-for the rest of the paper test.
+Monday 06:00 UTC misses the Wednesday-night backup window. `scripts/weekly_refresh.sh` fetches,
+rebuilds the model, restarts the bot, and then **always** DMs the outcome via
+`scripts/refresh_notify.py` — even when the refresh failed, which is exactly when you need to hear
+about it. Three outcomes are distinguished:
+
+| DM | Meaning |
+|---|---|
+| 🔄 `refresh OK — model data through …` | worked; the dates should advance week over week |
+| ⚠️ `upstream files REJECTED … model is FROZEN` | fetch exited 0 but upstream changed format, so good archives were kept and the model stopped advancing — **the failure that went unnoticed for weeks before 2026-07-27** |
+| 🛑 `refresh FAILED (exit N)` | the model was not updated at all |
+
+The daily heartbeat also carries `model data through YYYY-MM-DD (Nd)` and shouts `⚠️ STALE` past 10
+days, so a stalled feed is visible even if a DM is missed.
 
 ## 8. During the run
 

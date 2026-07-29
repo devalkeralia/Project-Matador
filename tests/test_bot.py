@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -155,6 +156,32 @@ def test_run_check_dedup_shows_prior_id_and_no_second_row():
     assert "opp #1" in second and "already logged" in second
     assert len(recent_opportunities(conn, 10)) == 1  # deduped -- no second row
     conn.close()
+
+
+def test_model_freshness_reports_the_date_and_flags_a_stalled_feed(tmp_path):
+    """The heartbeat's freshness line is the ONLY routine signal that the weekly refresh has
+    silently failed (the `rejected` warning goes to a log nobody reads). It must report the newest
+    tour's data date, and shout once the feed stops advancing."""
+    from matador.bot import STALE_DATA_WARN_DAYS, _model_freshness
+    art = tmp_path / "model.json"
+    art.write_text(json.dumps({"tours": {"atp": {"data_through": 20260726},
+                                         "wta": {"data_through": 20260719}}}))
+    fresh = _model_freshness(str(art), today=date(2026, 7, 28))
+    assert "2026-07-26" in fresh and "(2d)" in fresh   # newest of the two tours
+    assert "STALE" not in fresh
+
+    stale = _model_freshness(str(art), today=date(2026, 7, 26) + timedelta(days=STALE_DATA_WARN_DAYS + 1))
+    assert "STALE" in stale and "refresh.log" in stale
+
+
+def test_model_freshness_never_breaks_the_heartbeat(tmp_path):
+    """A missing or pre-`data_through` artifact must degrade to a note, not an exception -- the
+    liveness DM is what tells 'running' from 'silently down', so it must always send."""
+    from matador.bot import _model_freshness
+    assert "unavailable" in _model_freshness(str(tmp_path / "nope.json"))
+    old = tmp_path / "old.json"
+    old.write_text(json.dumps({"tours": {"atp": {}}}))       # artifact built before the field existed
+    assert "unknown" in _model_freshness(str(old))
 
 
 def test_run_check_dry_renders_the_alert_but_logs_nothing():

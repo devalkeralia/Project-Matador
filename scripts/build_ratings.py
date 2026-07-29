@@ -65,8 +65,18 @@ def _build_tour(tour: str, cfg, k: KFactor) -> dict | None:
         if entries:
             name_index[key] = entries
 
-    print(f"  [{tour}] {len(matches):,} matches -> {len(players):,} rated players; scales Bo3={scales[3]:.0f} Bo5={scales[5]:.0f}")
-    return {"scales": {str(bo): scale for bo, scale in scales.items()}, "players": players, "name_index": name_index}
+    # Latest match date that fed these ratings. Surfaced in the daily heartbeat so a FROZEN feed is
+    # visible in Telegram: file mtime is useless for this, because build_ratings rewrites model.json
+    # even when the fetch brought nothing new -- mtime would advance while the data stood still.
+    # load_matches parses tourney_date to a Timestamp, but the prepared CSV holds a YYYYMMDD int --
+    # accept either so this can't break on a loader change.
+    _latest = matches["tourney_date"].max()
+    data_through = int(_latest.strftime("%Y%m%d")) if hasattr(_latest, "strftime") else int(_latest)
+
+    print(f"  [{tour}] {len(matches):,} matches -> {len(players):,} rated players; "
+          f"scales Bo3={scales[3]:.0f} Bo5={scales[5]:.0f}; data through {data_through}")
+    return {"scales": {str(bo): scale for bo, scale in scales.items()}, "players": players,
+            "name_index": name_index, "data_through": data_through}
 
 
 def main() -> None:

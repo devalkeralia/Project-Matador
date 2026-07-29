@@ -130,21 +130,24 @@ watchdog in v1.
 **Weekly model refresh** (LuckyLoser91 updates weekly) — a host cron; a **restart is safe** because
 pending closing-line captures are rebuilt from the DB on startup, so none are lost:
 
-Run it **through Docker** so the host needs no venv and no pandas — this is the form actually installed
-and test-executed on the live droplet (see [`DEPLOY.md`](./DEPLOY.md) step 7). Cron has a minimal `PATH`,
-so use an absolute `docker` path, and `%` must be escaped as `\%` in a crontab:
+The work lives in **`scripts/weekly_refresh.sh`** (committed, so it is version-controlled and
+testable) and runs entirely through Docker — the host needs no venv and no pandas. Cron has a minimal
+`PATH`, hence the explicit one:
 
 ```cron
-# crontab -e  (Mondays 06:00, host clock UTC). --fetch PULLS the latest LuckyLoser91 feed;
-# without it the cron re-processes stale CSVs and the model freezes for the whole test.
+# crontab -e  (Mondays 06:00, host clock UTC)
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 6 * * 1 cd /home/matador/matador && { echo "===== refresh $(date -u +\%FT\%TZ) ====="; /usr/bin/docker compose run --rm --entrypoint python matador scripts/prepare_matches.py --fetch && /usr/bin/docker compose run --rm --entrypoint python matador scripts/build_ratings.py && /usr/bin/docker compose restart matador; } >> logs/refresh.log 2>&1
+0 6 * * 1 /home/matador/matador/scripts/weekly_refresh.sh >> /home/matador/matador/logs/refresh.log 2>&1
 ```
 
-**Check `logs/refresh.log` after the first Monday:** `latest` must advance week-over-week, and there must
-be **no** `WARNING: N year file(s) rejected` line — that warning means the upstream feed moved again and
-the model is frozen for the rest of the test.
+The script fetches (`--fetch` is mandatory — without it the model silently freezes on stale CSVs),
+rebuilds the artifact, restarts the bot, and then **always** DMs the outcome via
+`scripts/refresh_notify.py`. "Always" is the point: the refresh steps are `&&`-chained, but the
+notification must fire even when they fail, or the one outcome you need to hear about is the one that
+stays silent. It distinguishes **OK** / **REJECTED** (upstream moved, archives kept, model FROZEN) /
+**FAILED**, because those need different responses. The daily heartbeat additionally reports
+`model data through YYYY-MM-DD (Nd)` and flags `⚠️ STALE` past 10 days.
 
 **No-Docker alternative (systemd):** create `/etc/systemd/system/matador.service` with
 `WorkingDirectory=/path/to/Tennis Betting`, `ExecStart=/path/to/.venv/bin/python scripts/bot.py`,

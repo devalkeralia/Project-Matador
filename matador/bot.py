@@ -14,11 +14,12 @@ responsive. Each command opens its own KalshiClient + sqlite connection inside t
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections import Counter
 from contextlib import nullcontext
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from itertools import chain
 from pathlib import Path
 
@@ -702,10 +703,33 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---- daily heartbeat (liveness: a silent outage otherwise looks like 'no edge found') ----
 
+STALE_DATA_WARN_DAYS = 10   # weekly refresh + slack; past this the feed has almost certainly stalled
+
+
+def _model_freshness(model_path: str, today: date | None = None) -> str:
+    """One-line 'model data through YYYY-MM-DD (Nd)' for the heartbeat, flagged when it stops
+    advancing. This is the ONLY routine signal that the weekly refresh has silently failed -- the
+    `rejected` warning goes to logs/refresh.log, which nobody reads, and the refresh is the failure
+    that went unnoticed for weeks before 2026-07-27. Best-effort: never break the heartbeat."""
+    try:
+        art = json.loads(Path(model_path).read_text())
+        stamps = [t["data_through"] for t in art.get("tours", {}).values() if t.get("data_through")]
+        if not stamps:
+            return "model data through unknown (rebuild to record it)"
+        newest = max(stamps)
+        d = date(newest // 10000, (newest // 100) % 100, newest % 100)
+        age = ((today or date.today()) - d).days
+        flag = f"  ⚠️ STALE >{STALE_DATA_WARN_DAYS}d — CHECK logs/refresh.log" if age > STALE_DATA_WARN_DAYS else ""
+        return f"model data through {d.isoformat()} ({age}d){flag}"
+    except Exception:  # missing/damaged artifact must not kill the liveness DM
+        return "model freshness unavailable"
+
+
 def _heartbeat_text(conn, cfg) -> str:
     s = summarize(settled_bets(conn), cfg)
     c = s["captures"]
-    return (f"💓 Matador OK — {s['n_opportunities']} opps, {s['n_clv']} Kalshi-closed over {s['n_clusters']} week(s); "
+    return (f"💓 Matador OK — {_model_freshness(cfg.model_path)}; "
+            f"{s['n_opportunities']} opps, {s['n_clv']} Kalshi-closed over {s['n_clusters']} week(s); "
             f"captures {c['auto']}a/{c['manual']}m/{c['sharp_only']}s/{c['missed']}x; {len(pending_captures(conn))} pending; "
             f"sharp {s['n_sharp']} pinnacle / {s['n_consensus']} consensus (coverage {s['sharp_coverage']:.0%}); "
             f"open exposure ${storage.open_exposure(conn):.0f}.")

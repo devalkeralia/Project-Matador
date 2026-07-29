@@ -44,3 +44,21 @@ def test_rejects_a_csv_missing_the_required_columns():
 
 def test_rejects_an_html_error_page():
     assert _load()._is_usable_csv(b"<!DOCTYPE html>\n<html><body>404</body></html>") is False
+
+
+def test_rejects_a_header_only_or_truncated_body():
+    """Review finding 2026-07-29: a header with no rows passed the original check and would overwrite
+    a good archive with an empty one -- which reads downstream as 'that year had no tennis' rather
+    than as an error, so nothing would alert."""
+    mod = _load()
+    header = b"tourney_name,tourney_date,winner_name,loser_name,score\n"
+    assert mod._is_usable_csv(header) is False                    # header only
+    assert mod._is_usable_csv(header + b"\n\n") is False           # header + blank lines
+    # one COMPLETE row is enough (5 header fields -> the row needs 5 too)
+    assert mod._is_usable_csv(header + b"Wim,2026-07-01,A,B,6-4 6-4") is True
+    # a row truncated mid-way has fewer fields than the header -> misaligned, reject
+    assert mod._is_usable_csv(header + b"Wim,2026-07-01,A") is False
+
+
+def test_rejects_a_json_error_body():
+    assert _load()._is_usable_csv(b'{"message":"Not Found"}') is False

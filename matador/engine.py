@@ -17,7 +17,7 @@ from matador.edge import evaluate_market, net_edge
 from matador.kalshi.client import BestQuotes, MatchResolution, reconstruct_asks
 from matador.model.probability import resolve_player
 from matador.names import canonical_key
-from matador.storage import insert_opportunity, last_opportunity
+from matador.storage import insert_opportunity, last_opportunity, last_position
 from matador.tournament import tournament_context
 
 
@@ -352,10 +352,26 @@ def list_open_matches(client, model, cfg, tour) -> list[MatchInfo]:
     return matches
 
 
+def backed_player(opp: Opportunity) -> str | None:
+    """The player this opportunity actually backs: the market's Yes subject on a yes bet, the
+    opponent on a no bet. The dedup identity -- NOT market_ticker, which varies by which anchor
+    the caller happened to pick (see storage.last_position)."""
+    return opp.market_player if opp.side == "yes" else opp.opponent
+
+
 def log_opportunity(conn, opp: Opportunity, *, force: bool = False) -> int | None:
-    """Insert a paper opportunity, deduping on (market_ticker, side) unless force=True. Returns
-    the new row id, or None if a prior alert for this contract+side already exists."""
-    if not force and last_opportunity(conn, opp.market_ticker, opp.side) is not None:
+    """Insert a paper opportunity, deduping on the ECONOMIC POSITION (event_ticker + backed player)
+    unless force=True. Returns the new row id, or None if that position is already logged.
+
+    Deduping on (market_ticker, side) was WRONG: one position is expressible as yes-on-A or
+    no-on-B, and scan_series (sorted anchor) vs resolve_match (typed-order anchor) produce
+    different anchors for the same bet -- so it logged twice. See storage.last_position."""
+    backed = backed_player(opp)
+    if not force and backed is not None and last_position(conn, opp.event_ticker, backed) is not None:
+        return None
+    # No opponent recorded (shouldn't happen -- the engine abstains on unresolved_market) -> fall
+    # back to the old key rather than skipping the dedup entirely.
+    if not force and backed is None and last_opportunity(conn, opp.market_ticker, opp.side) is not None:
         return None
     return insert_opportunity(
         conn,

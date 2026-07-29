@@ -184,11 +184,37 @@ def recent_opportunities(conn: sqlite3.Connection, limit: int = 20) -> list[sqli
 
 
 def last_opportunity(conn: sqlite3.Connection, market_ticker: str, side: str) -> sqlite3.Row | None:
-    """Most recent alert logged for this contract + side, or None -- the dedup lookup the
-    alert layer checks before re-inserting the same standing pre-match edge."""
+    """Most recent alert logged for this contract + side, or None. Retained for the alert layer's
+    'show the PRIOR opp id' message; the DEDUP decision uses last_position() instead -- see why."""
     return conn.execute(
         "SELECT * FROM opportunities WHERE market_ticker = ? AND side = ? ORDER BY id DESC LIMIT 1",
         (market_ticker, side),
+    ).fetchone()
+
+
+def last_position(conn: sqlite3.Connection, event_ticker: str, backed_player: str) -> sqlite3.Row | None:
+    """Most recent alert for this ECONOMIC POSITION -- the event plus the player actually backed --
+    or None. This, not (market_ticker, side), is the correct dedup identity.
+
+    Why: a Kalshi event has one market per player, so ONE position is expressible two ways --
+    yes on the backed player's market, or no on the opponent's. Which anchor you get depends on
+    caller-specific ordering: scan_series sorts by ticker, while client.resolve_match anchors on
+    whichever player the owner TYPED first. So the same bet arrived under two different
+    (market_ticker, side) keys and logged twice -- observed live 2026-07-29 as Shapovalov/Hijikata
+    under both -SHA/no and -HIJ/yes, both backing Hijikata at 41c.
+
+    That is not cosmetic: a duplicate double-weights the match in the CLV mean AND in the ISO-week
+    cluster bootstrap, narrowing the CI, and inflates the count toward the >=200 floor -- biasing
+    the go-live gate TOWARD a false positive, invisible until the gate is read weeks later.
+
+    Keyed on the stored `event_ticker` (identifies the match regardless of anchor) and the backed
+    player, resolved from side: market_player on yes, opponent on no.
+    """
+    return conn.execute(
+        "SELECT * FROM opportunities WHERE event_ticker = ? AND side IS NOT NULL "
+        "  AND (CASE WHEN side = 'yes' THEN market_player ELSE opponent END) = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (event_ticker, backed_player),
     ).fetchone()
 
 

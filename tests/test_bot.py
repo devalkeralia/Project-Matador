@@ -158,20 +158,49 @@ def test_run_check_dedup_shows_prior_id_and_no_second_row():
     conn.close()
 
 
-def test_model_freshness_reports_the_date_and_flags_a_stalled_feed(tmp_path):
-    """The heartbeat's freshness line is the ONLY routine signal that the weekly refresh has
-    silently failed (the `rejected` warning goes to a log nobody reads). It must report the newest
-    tour's data date, and shout once the feed stops advancing."""
+def test_model_freshness_reports_every_tour_and_ages_off_the_oldest(tmp_path):
+    """The heartbeat's freshness line is the ONLY routine signal that the weekly refresh has silently
+    failed (the `rejected` warning goes to a log nobody reads). It must show EVERY tour and age off
+    the OLDEST -- the first version used max(), which made a single-tour freeze invisible."""
     from matador.bot import STALE_DATA_WARN_DAYS, _model_freshness
     art = tmp_path / "model.json"
     art.write_text(json.dumps({"tours": {"atp": {"data_through": 20260726},
                                          "wta": {"data_through": 20260719}}}))
-    fresh = _model_freshness(str(art), today=date(2026, 7, 28))
-    assert "2026-07-26" in fresh and "(2d)" in fresh   # newest of the two tours
-    assert "STALE" not in fresh
+    both = _model_freshness(str(art), today=date(2026, 7, 28))
+    assert "atp 2026-07-26 (2d)" in both and "wta 2026-07-19 (9d)" in both
+    assert "STALE" not in both
 
     stale = _model_freshness(str(art), today=date(2026, 7, 26) + timedelta(days=STALE_DATA_WARN_DAYS + 1))
     assert "STALE" in stale and "refresh.log" in stale
+
+
+def test_model_freshness_catches_a_SINGLE_tour_freeze(tmp_path):
+    """The regression the review caught: ATP fresh, WTA frozen 88 days. With max() this reported
+    '(1d)' and no warning, while every WTA alert priced off a frozen rating book for the rest of the
+    run. Upstream broke per-directory before (the 2026-07 Git-LFS move), so this is the realistic
+    failure, not a hypothetical."""
+    from matador.bot import _model_freshness
+    art = tmp_path / "model.json"
+    art.write_text(json.dumps({"tours": {"atp": {"data_through": 20260727},
+                                         "wta": {"data_through": 20260501}}}))
+    out = _model_freshness(str(art), today=date(2026, 7, 28))
+    assert "STALE" in out, f"a single-tour freeze must warn, got: {out}"
+    assert "wta 2026-05-01" in out and "(88d)" in out   # and the frozen tour must be VISIBLE
+
+
+def test_model_freshness_flags_a_missing_or_malformed_stamp(tmp_path):
+    """A tour with no stamp, or a nonsense one, is itself suspicious -- name it and warn rather than
+    filtering it out, which would hide the per-tour problem this line exists to surface."""
+    from matador.bot import _model_freshness
+    art = tmp_path / "model.json"
+    art.write_text(json.dumps({"tours": {"atp": {"data_through": 20260727}, "wta": {}}}))
+    out = _model_freshness(str(art), today=date(2026, 7, 28))
+    assert "wta unknown" in out and "STALE" in out
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"tours": {"atp": {"data_through": 20261345}}}))
+    out2 = _model_freshness(str(bad), today=date(2026, 7, 28))
+    assert "bad-stamp" in out2 and "STALE" in out2
 
 
 def test_model_freshness_never_breaks_the_heartbeat(tmp_path):
@@ -182,6 +211,33 @@ def test_model_freshness_never_breaks_the_heartbeat(tmp_path):
     old = tmp_path / "old.json"
     old.write_text(json.dumps({"tours": {"atp": {}}}))       # artifact built before the field existed
     assert "unknown" in _model_freshness(str(old))
+
+
+def test_artifact_config_drift_is_detected_and_reported_not_fatal():
+    """predict() uses the ARTIFACT's params (Model.from_artifact reads surface_weight / shrinkage_n0 /
+    min_matches / initial_rating from the JSON), so a drifted config.yaml documents a model that is
+    not running -- and the weekly cron rebuilds the artifact from whatever code is checked out, so
+    drift can appear on a Monday untouched by anyone. Report it; never make it fatal, because
+    refusing to start would crash-loop the container and stop sampling entirely."""
+    from matador.bot import _heartbeat_text, artifact_config_drift
+
+    class FakeModel:
+        surface_weight, shrinkage_n0, initial, min_matches = 0.3, 0.0, 1500.0, 20
+
+    cfg = make_cfg()
+    assert artifact_config_drift(FakeModel(), cfg) == []      # coherent -> silent
+
+    class Drifted(FakeModel):
+        shrinkage_n0 = 10.0                                    # artifact built with the OLD value
+
+    drift = artifact_config_drift(Drifted(), cfg)
+    assert len(drift) == 1 and "shrinkage_n0" in drift[0]
+    assert "artifact=10.0" in drift[0] and "config=0.0" in drift[0]
+
+    conn = _db()
+    assert "DRIFT" not in _heartbeat_text(conn, cfg, [])       # clean heartbeat stays clean
+    assert "DRIFT" in _heartbeat_text(conn, cfg, drift)        # drifted heartbeat shouts
+    conn.close()
 
 
 def test_run_check_dry_renders_the_alert_but_logs_nothing():

@@ -39,15 +39,32 @@ def _data_through(model_path: str) -> dict[str, str]:
     return out
 
 
+RUN_MARKER = "===== refresh "   # written by weekly_refresh.sh at the start of each run
+
+
+def current_run_slice(log_tail: str) -> str:
+    """Only THIS run's output. logs/refresh.log is append-only across the whole 12-week test, so
+    scanning the raw tail meant one genuine rejection in week 2 produced a false FROZEN alarm every
+    Monday thereafter -- and a boy-who-cried-wolf alarm is worse than none, because the real one
+    stops being read. Slice from the last run marker; if absent, fall back to the whole tail (better
+    a false alarm than a missed freeze)."""
+    idx = log_tail.rfind(RUN_MARKER)
+    return log_tail[idx:] if idx != -1 else log_tail
+
+
 def build_message(exit_code: int, data_through: dict[str, str], log_tail: str) -> str:
     """The DM text. Pure so it can be tested without a network or a real log.
 
     Three outcomes worth distinguishing, because they need different responses:
       - FAILED: the model was not updated at all -> investigate now
-      - REJECTED: the fetch ran but upstream changed format, archives kept -> the model is FROZEN
+      - REJECTED/FROZEN: the fetch ran and exited 0, but nothing usable arrived and the good
+        archives were deliberately kept -> the model is FROZEN. Exit code CANNOT detect this: the
+        fetch exits 0 BY DESIGN when it protects existing data.
       - OK: report the dates so a stalled-but-'successful' feed is still visible week over week
     """
-    rejected = "rejected as unusable" in log_tail
+    run = current_run_slice(log_tail)
+    # Both warnings prepare_matches can emit: a changed/LFS body, and nothing-fetched-at-all.
+    rejected = "rejected as unusable" in run or "the model is FROZEN" in run
     dates = ", ".join(f"{t.upper()} {d}" for t, d in sorted(data_through.items())) or "unknown"
 
     if exit_code != 0:

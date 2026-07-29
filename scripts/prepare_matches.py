@@ -34,14 +34,28 @@ REQUIRED_COLUMNS = (b"winner_name", b"loser_name", b"tourney_date")
 
 
 def _is_usable_csv(content: bytes) -> bool:
-    """True only if this looks like a match CSV prepare() can consume. Guards the overwrite: a
+    """True only if this looks like a match CSV prepare() can consume. Guards the OVERWRITE: a
     Git-LFS pointer stub (or any upstream format change) must leave the existing archive alone
     instead of replacing it -- an unvalidated 'any 200 with content' write destroyed 59 good
-    year files when upstream switched to LFS."""
-    if content.lstrip().startswith(b"version https://git-lfs.github.com/spec/v1"):
+    year files when upstream switched to LFS.
+
+    Requires the header AND at least one data row: a header-only or truncated body would otherwise
+    pass and overwrite a good archive with an empty one, which reads downstream as "that year had
+    no tennis" rather than as an error.
+    """
+    stripped = content.lstrip()
+    if stripped.startswith(b"version https://git-lfs.github.com/spec/v1"):
         return False
-    header = content.split(b"\n", 1)[0]
-    return all(col in header for col in REQUIRED_COLUMNS)
+    if stripped[:1] in (b"<", b"{", b"["):        # HTML error page / JSON error body
+        return False
+    lines = [ln for ln in stripped.split(b"\n") if ln.strip()]
+    if len(lines) < 2:                            # header only, or empty
+        return False
+    header = lines[0]
+    if not all(col in header for col in REQUIRED_COLUMNS):
+        return False
+    # A data row must have at least as many fields as the header, or the body is truncated/misaligned.
+    return lines[1].count(b",") >= header.count(b",")
 
 
 def _player_id(name: str) -> str:
@@ -55,30 +69,48 @@ def fetch(tour: str, year_from: int, year_to: int) -> int:
     """Download the raw yearly CSVs from LuckyLoser91 into data/tennis_{tour}_raw/ (overwriting on
     success; a failed year leaves the existing file). Returns the count fetched."""
     src_dir = Path(f"data/tennis_{tour}_raw")
+    had_files = any(src_dir.glob(f"{tour}_matches_*.csv"))
     src_dir.mkdir(parents=True, exist_ok=True)
     got = 0
     rejected = 0
+    missing = 0        # 404 / empty body -- a RENAMED upstream path looks exactly like this
+    unreachable = 0    # network errors that exhausted the retries
     with httpx.Client(timeout=40.0, follow_redirects=True) as client:
         for year in range(year_from, year_to + 1):
             url = RAW_URL.format(tour=tour, year=year)
+            outcome = "unreachable"
             for _ in range(3):
                 try:
                     r = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-                    if r.status_code == 404:
-                        break  # that year isn't published yet
-                    if r.status_code == 200 and r.content:
+                    if r.status_code == 404 or not r.content:
+                        outcome = "missing"   # that year isn't published (or the path moved)
+                        break
+                    if r.status_code == 200:
                         if not _is_usable_csv(r.content):
-                            rejected += 1
-                            break  # bad body won't heal on retry; keep whatever is already on disk
+                            outcome = "rejected"   # bad body won't heal on retry
+                            break
                         (src_dir / f"{tour}_matches_{year}.csv").write_bytes(r.content)
-                        got += 1
+                        outcome = "ok"
                         break
                 except httpx.HTTPError:
                     pass
-    print(f"[{tour}] fetched {got} year file(s) from LuckyLoser91")
+            got += outcome == "ok"
+            rejected += outcome == "rejected"
+            missing += outcome == "missing"
+            unreachable += outcome == "unreachable"
+
+    print(f"[{tour}] fetched {got} year file(s) from LuckyLoser91 "
+          f"({rejected} rejected, {missing} missing/404, {unreachable} unreachable)")
     if rejected:
         print(f"[{tour}] WARNING: {rejected} year file(s) rejected as unusable (LFS pointer or "
               f"changed format) -- existing archives kept; the feed may have moved")
+    # got==0 while archives ALREADY exist means we fetched nothing new over a feed we previously
+    # read successfully -- i.e. the path was renamed or the host is down. Without this the run
+    # exits 0, prints no WARNING, and the owner is DM'd "Weekly refresh OK" for a no-op: the exact
+    # silent freeze that went unnoticed for weeks before 2026-07-27.
+    if got == 0 and had_files:
+        print(f"[{tour}] WARNING: 0 year file(s) fetched but archives already exist -- feed "
+              f"unreachable or its paths moved; existing archives kept and the model is FROZEN")
     return got
 
 

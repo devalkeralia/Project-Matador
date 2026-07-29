@@ -706,6 +706,34 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 STALE_DATA_WARN_DAYS = 10   # weekly refresh + slack; past this the feed has almost certainly stalled
 
 
+def artifact_config_drift(model, cfg) -> list[str]:
+    """Params where the LOADED ARTIFACT disagrees with config -- empty when coherent.
+
+    `Model.from_artifact` reads surface_weight / min_matches / initial_rating / shrinkage_n0 and the
+    fitted scales FROM THE ARTIFACT, so those are what predict() actually uses; config.yaml only
+    applies at BUILD time. A drifted config therefore documents a model that isn't running -- and
+    since the weekly cron rebuilds the artifact from whatever code is checked out, drift can appear
+    on a Monday without anyone touching the bot.
+
+    Reported, never fatal: refusing to start would crash-loop the container under
+    `restart: unless-stopped`, and a total sampling outage is worse than a mis-documented but
+    internally consistent model.
+    """
+    checks = (
+        ("surface_weight", getattr(model, "surface_weight", None), cfg.elo.surface_weight),
+        ("shrinkage_n0", getattr(model, "shrinkage_n0", None), cfg.elo.shrinkage_n0),
+        ("initial_rating", getattr(model, "initial", None), cfg.elo.initial_rating),
+        ("min_matches", getattr(model, "min_matches", None), cfg.min_matches),
+    )
+    drift = []
+    for name, in_artifact, in_config in checks:
+        if in_artifact is None or in_config is None:
+            continue
+        if abs(float(in_artifact) - float(in_config)) > 1e-9:
+            drift.append(f"{name}: artifact={in_artifact} config={in_config}")
+    return drift
+
+
 def _model_freshness(model_path: str, today: date | None = None) -> str:
     """One-line 'model data through YYYY-MM-DD (Nd)' for the heartbeat, flagged when it stops
     advancing. This is the ONLY routine signal that the weekly refresh has silently failed -- the
@@ -713,30 +741,50 @@ def _model_freshness(model_path: str, today: date | None = None) -> str:
     that went unnoticed for weeks before 2026-07-27. Best-effort: never break the heartbeat."""
     try:
         art = json.loads(Path(model_path).read_text())
-        stamps = [t["data_through"] for t in art.get("tours", {}).values() if t.get("data_through")]
-        if not stamps:
+        tours = art.get("tours", {})
+        if not tours:
             return "model data through unknown (rebuild to record it)"
-        newest = max(stamps)
-        d = date(newest // 10000, (newest // 100) % 100, newest % 100)
-        age = ((today or date.today()) - d).days
-        flag = f"  ⚠️ STALE >{STALE_DATA_WARN_DAYS}d — CHECK logs/refresh.log" if age > STALE_DATA_WARN_DAYS else ""
-        return f"model data through {d.isoformat()} ({age}d){flag}"
+        ref = today or date.today()
+        parts, ages = [], []
+        for tour in sorted(tours):
+            stamp = tours[tour].get("data_through")
+            if not stamp:
+                # A tour with no stamp is itself suspicious -- name it rather than filtering it out,
+                # which would hide exactly the per-tour problem this line exists to surface.
+                parts.append(f"{tour} unknown")
+                continue
+            try:
+                d = date(stamp // 10000, (stamp // 100) % 100, stamp % 100)
+            except ValueError:              # malformed stamp e.g. 20261345
+                parts.append(f"{tour} bad-stamp({stamp})")
+                continue
+            age = (ref - d).days
+            ages.append(age)
+            parts.append(f"{tour} {d.isoformat()} ({age}d)")
+        # Age off the OLDEST tour, and flag when any tour is missing/malformed. Using max() (the
+        # newest) made a single-tour freeze invisible: ATP fresh + WTA frozen 88d reported "1d" with
+        # no warning, while every WTA alert priced off a frozen rating book. Upstream broke per
+        # directory before (the 2026-07 Git-LFS move), so per-tour is the realistic failure.
+        unhealthy = len(ages) < len(tours) or (ages and max(ages) > STALE_DATA_WARN_DAYS)
+        flag = f"  ⚠️ STALE >{STALE_DATA_WARN_DAYS}d — CHECK logs/refresh.log" if unhealthy else ""
+        return f"model data {' / '.join(parts)}{flag}"
     except Exception:  # missing/damaged artifact must not kill the liveness DM
         return "model freshness unavailable"
 
 
-def _heartbeat_text(conn, cfg) -> str:
+def _heartbeat_text(conn, cfg, drift: list[str] | None = None) -> str:
     s = summarize(settled_bets(conn), cfg)
     c = s["captures"]
+    warn = f"\n⚠️ MODEL/CONFIG DRIFT ({'; '.join(drift)}) — predict() uses the ARTIFACT's values." if drift else ""
     return (f"💓 Matador OK — {_model_freshness(cfg.model_path)}; "
             f"{s['n_opportunities']} opps, {s['n_clv']} Kalshi-closed over {s['n_clusters']} week(s); "
             f"captures {c['auto']}a/{c['manual']}m/{c['sharp_only']}s/{c['missed']}x; {len(pending_captures(conn))} pending; "
             f"sharp {s['n_sharp']} pinnacle / {s['n_consensus']} consensus (coverage {s['sharp_coverage']:.0%}); "
-            f"open exposure ${storage.open_exposure(conn):.0f}.")
+            f"open exposure ${storage.open_exposure(conn):.0f}." + warn)
 
 
-def _heartbeat_job(cfg) -> str:
-    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg))
+def _heartbeat_job(cfg, drift: list[str] | None = None) -> str:
+    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg, drift))
 
 
 async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -744,7 +792,7 @@ async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     long-poll / token conflict otherwise looks identical to a quiet market for days."""
     bd = context.bot_data
     try:
-        msg = await asyncio.to_thread(_heartbeat_job, bd["cfg"])
+        msg = await asyncio.to_thread(_heartbeat_job, bd["cfg"], bd.get("drift"))
     except Exception:
         log.exception("heartbeat failed")
         return
@@ -767,7 +815,13 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
     """Build the PTB app: stash shared read-only state in bot_data and register the commands,
     each gated to the owner's chat both by filters.Chat and the in-handler is_authorized check."""
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
-    app.bot_data.update(cfg=cfg, model=model, demo=demo, chat_id=int(chat_id), default_tour=default_tour)
+    # Surface artifact-vs-config drift at startup AND daily in the heartbeat: predict() uses the
+    # ARTIFACT's params, so drift means config.yaml describes a model that isn't running.
+    drift = artifact_config_drift(model, cfg)
+    if drift:
+        log.warning("MODEL/CONFIG DRIFT -- predict() uses the ARTIFACT's values: %s", "; ".join(drift))
+    app.bot_data.update(cfg=cfg, model=model, demo=demo, chat_id=int(chat_id),
+                        default_tour=default_tour, drift=drift)
     app.add_error_handler(on_error)
     chat_filter = filters.Chat(chat_id=int(chat_id))
     app.add_handler(CommandHandler("check", cmd_check, filters=chat_filter))

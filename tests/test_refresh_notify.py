@@ -45,6 +45,35 @@ def test_rejected_warning_is_never_reported_as_success():
     assert not msg.startswith("🔄 Weekly refresh OK")
 
 
+def test_a_prior_weeks_rejection_does_not_raise_a_false_alarm_this_week():
+    """logs/refresh.log is append-only for 12 weeks. Scanning the raw tail meant one genuine
+    rejection in week 2 produced a false FROZEN DM every Monday after -- and an alarm that cries
+    wolf stops being read, which is worse than no alarm."""
+    mod = _load()
+    log = (
+        "===== refresh 2026-08-03T06:00:00Z =====\n" + _REJECTED_LOG +
+        "===== refresh 2026-08-10T06:00:00Z =====\n" + _OK_LOG        # this week: clean
+    )
+    msg = mod.build_message(0, _DATES, log)
+    assert msg.startswith("🔄 Weekly refresh OK"), f"false alarm from a prior week: {msg}"
+    # ...and a rejection in the CURRENT run must still fire
+    log2 = "===== refresh 2026-08-03T06:00:00Z =====\n" + _OK_LOG + \
+           "===== refresh 2026-08-10T06:00:00Z =====\n" + _REJECTED_LOG
+    assert "REJECTED" in mod.build_message(0, _DATES, log2)
+
+
+def test_nothing_fetched_at_all_is_reported_as_frozen_not_ok():
+    """The all-404 / feed-renamed case: fetch exits 0, nothing is rejected, nothing is downloaded,
+    and the archives are deliberately kept. Exit code cannot see it, so the FROZEN warning must."""
+    mod = _load()
+    log = ("===== refresh 2026-08-10T06:00:00Z =====\n"
+           "[atp] fetched 0 year file(s) from LuckyLoser91 (0 rejected, 59 missing/404, 0 unreachable)\n"
+           "[atp] WARNING: 0 year file(s) fetched but archives already exist -- feed unreachable or "
+           "its paths moved; existing archives kept and the model is FROZEN\n")
+    msg = mod.build_message(0, _DATES, log)
+    assert "FROZEN" in msg and not msg.startswith("🔄 Weekly refresh OK")
+
+
 def test_unknown_dates_do_not_crash_the_message():
     msg = _load().build_message(0, {}, _OK_LOG)
     assert "unknown" in msg

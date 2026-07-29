@@ -292,6 +292,37 @@ def test_swapped_market_order_does_not_log_the_position_twice():
     conn.close()
 
 
+def test_check_typed_order_cannot_duplicate_a_scanned_position():
+    """The surviving half of the anchor bug, found by review 2026-07-29. scan_series anchors on the
+    SORTED ticker, but client.resolve_match (used by /check and /preview) anchors on whichever player
+    the owner TYPED FIRST. So one position had two (market_ticker, side) keys and logged twice --
+    in BOTH orders, since a manual /check under a non-canonical anchor also makes the NEXT scheduled
+    scan duplicate it. Dedup is therefore on the economic position, not the anchor."""
+    from matador.engine import evaluate_match
+
+    def run(sequence):
+        conn = connect(":memory:")
+        init_db(conn)
+        with make_client() as client:
+            for step in sequence:
+                if step == "scan":
+                    results = scan_series(client, SymmetricModel(), make_cfg(), "atp")
+                else:  # a /check with the players typed in reversed order
+                    results = [evaluate_match(client, SymmetricModel(), make_cfg(), "atp", "Bbb", "Aaa")]
+                for r in results:
+                    if r.opportunity is not None:
+                        log_opportunity(conn, r.opportunity)
+        rows = conn.execute("SELECT market_ticker, side, market_player, opponent FROM opportunities").fetchall()
+        conn.close()
+        backed = {(r["market_player"] if r["side"] == "yes" else r["opponent"]) for r in rows}
+        return len(rows), backed
+
+    for sequence in (["scan", "check"], ["check", "scan"]):
+        n, backed = run(sequence)
+        assert backed == {"Player Aaa"}, f"{sequence}: setup broken, backed {backed}"
+        assert n == 1, f"{sequence}: expected 1 deduped row, got {n}"
+
+
 def test_scan_series_skips_single_market_event():
     with make_client(markets={_EVENT: [_mk(_EVENT + "-A", "Player Aaa")]}) as client:
         results = list(scan_series(client, OrientedModel("Player Aaa", "Player Bbb", 0.6), make_cfg(), "atp"))

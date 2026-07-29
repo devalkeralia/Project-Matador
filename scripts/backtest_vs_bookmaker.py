@@ -17,6 +17,13 @@ NOT beat the close (w* ~ 0, negative ROI) -- see scripts/backtest_vs_kalshi.py f
 (softer) venue. Needs data/model.json (scripts/build_ratings.py) and match data under data/.
 
     .venv/bin/python scripts/backtest_vs_bookmaker.py [start_year end_year]   # default 2025 2026
+
+RUN LOCALLY, NOT IN THE DOCKER CONTAINER: reading the cached tennis-data.co.uk .xlsx needs an Excel
+engine (openpyxl), deliberately NOT in pyproject dependencies -- the image ships only what the
+always-on bot needs. In the container pd.read_excel raises ImportError; locally openpyxl is already
+in .venv. Caveat on the numbers this prints: it loads data/model.json, whose per-format scales are
+fitted over the FULL record set including the 2025-26 evaluation window, so the reported held-out
+figures are mildly optimistic (correct for production; the train/test split belongs in evaluation).
 """
 import json
 import sys

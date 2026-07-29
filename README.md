@@ -129,17 +129,26 @@ watchdog in v1.
 **Weekly model refresh** (LuckyLoser91 updates weekly) — a host cron; a **restart is safe** because
 pending closing-line captures are rebuilt from the DB on startup, so none are lost:
 
-```bash
-# crontab -e  (Mondays 06:00) — run from the repo root. --fetch PULLS the latest LuckyLoser91 feed
-# (without it the cron just re-processes stale CSVs and the model freezes for the whole test).
-0 6 * * 1  cd /path/to/Tennis\ Betting && .venv/bin/python scripts/prepare_matches.py --fetch && \
-           .venv/bin/python scripts/build_ratings.py && docker compose restart matador
+Run it **through Docker** so the host needs no venv and no pandas — this is the form actually installed
+and test-executed on the live droplet (see [`DEPLOY.md`](./DEPLOY.md) step 7). Cron has a minimal `PATH`,
+so use an absolute `docker` path, and `%` must be escaped as `\%` in a crontab:
+
+```cron
+# crontab -e  (Mondays 06:00, host clock UTC). --fetch PULLS the latest LuckyLoser91 feed;
+# without it the cron re-processes stale CSVs and the model freezes for the whole test.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 6 * * 1 cd /home/matador/matador && { echo "===== refresh $(date -u +\%FT\%TZ) ====="; /usr/bin/docker compose run --rm --entrypoint python matador scripts/prepare_matches.py --fetch && /usr/bin/docker compose run --rm --entrypoint python matador scripts/build_ratings.py && /usr/bin/docker compose restart matador; } >> logs/refresh.log 2>&1
 ```
+
+**Check `logs/refresh.log` after the first Monday:** `latest` must advance week-over-week, and there must
+be **no** `WARNING: N year file(s) rejected` line — that warning means the upstream feed moved again and
+the model is frozen for the rest of the test.
 
 **No-Docker alternative (systemd):** create `/etc/systemd/system/matador.service` with
 `WorkingDirectory=/path/to/Tennis Betting`, `ExecStart=/path/to/.venv/bin/python scripts/bot.py`,
-`Restart=always`, `User=<you>`, then `systemctl enable --now matador`. Same weekly-refresh cron, with
-`systemctl restart matador` instead of `docker compose restart`.
+`Restart=always`, `User=<you>`, then `systemctl enable --now matador`. Same weekly-refresh cron, but with
+`.venv/bin/python` for the two scripts and `systemctl restart matador` instead of the Docker form.
 
 ## Phase-6 forward-CLV paper-test runbook
 

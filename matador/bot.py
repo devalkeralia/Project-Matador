@@ -45,7 +45,7 @@ HELP = (
     "/check — value-check one match now; alerts if it's mispriced, else shows the analysis\n"
     "        usage: /check <player> vs <player> [atp|wta]\n"
     "        e.g.   /check Sinner vs Zverev\n"
-    "/preview (or /dry) — same as /check but NEVER logged; safe to run or demo mid-paper-test\n"
+    "/preview — same as /check but NEVER logged; safe to run or demo mid-paper-test\n"
     "        usage: /preview <player> vs <player> [atp|wta]\n"
     "/find [atp|wta] — list open matches; checkable ones ranked by model strength\n"
     "/scan — sweep all open ATP/WTA markets for value\n"
@@ -747,7 +747,7 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
     app.add_error_handler(on_error)
     chat_filter = filters.Chat(chat_id=int(chat_id))
     app.add_handler(CommandHandler("check", cmd_check, filters=chat_filter))
-    app.add_handler(CommandHandler(["preview", "dry"], cmd_preview, filters=chat_filter))
+    app.add_handler(CommandHandler("preview", cmd_preview, filters=chat_filter))
     app.add_handler(CommandHandler(["find", "findmatch"], cmd_find, filters=chat_filter))
     app.add_handler(CommandHandler("scan", cmd_scan, filters=chat_filter))
     app.add_handler(CommandHandler("recent", cmd_recent, filters=chat_filter))

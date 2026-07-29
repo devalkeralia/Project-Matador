@@ -45,6 +45,8 @@ HELP = (
     "/check — value-check one match now; alerts if it's mispriced, else shows the analysis\n"
     "        usage: /check <player> vs <player> [atp|wta]\n"
     "        e.g.   /check Sinner vs Zverev\n"
+    "/preview (or /dry) — same as /check but NEVER logged; safe to run or demo mid-paper-test\n"
+    "        usage: /preview <player> vs <player> [atp|wta]\n"
     "/find [atp|wta] — list open matches; checkable ones ranked by model strength\n"
     "/scan — sweep all open ATP/WTA markets for value\n"
     "/recent [n] — the last n logged opportunities (default 10)\n"
@@ -157,16 +159,32 @@ def _exposure_warning(conn, cfg) -> str:
     return ""
 
 
-def run_check(client, model, cfg, conn, tour: str, a: str, b: str) -> str:
+_DRY_BANNER = "🔍 PREVIEW — evaluated but NOT logged; the paper sample is untouched.\n\n"
+
+
+def _dry_banner(dry: bool) -> str:
+    return _DRY_BANNER if dry else ""
+
+
+def run_check(client, model, cfg, conn, tour: str, a: str, b: str, *, dry: bool = False) -> str:
     """Evaluate one match; on a qualifying edge log it (deduped) and format the alert, else a
-    friendly abstain. On a dedup the alert shows the PRIOR opp id and a not-re-logged note."""
+    friendly abstain. On a dedup the alert shows the PRIOR opp id and a not-re-logged note.
+
+    `dry=True` (from /preview) evaluates and renders identically but writes NOTHING. It exists so
+    the owner can inspect or demo the engine mid-paper-test without injecting an owner-TIMED
+    opportunity into a sample whose whole purpose is unbiased scheduled sampling. Not-writing is
+    deliberate rather than writing-and-filtering-later: a filter every analysis path must remember
+    to apply is one forgotten call away from silent contamination."""
     result = evaluate_match(client, model, cfg, tour, a, b)
     if result.status == "abstain":
         # Priced-but-no-alert -> analysis snapshot (+ /notes hint); earlier abstains -> friendly reason.
         if result.diagnostics is not None:
-            return format_no_alert(result.reason, result.diagnostics) + _NOTES_FOOTER
-        return format_abstain(result.reason)
+            return _dry_banner(dry) + format_no_alert(result.reason, result.diagnostics) + _NOTES_FOOTER
+        return _dry_banner(dry) + format_abstain(result.reason)
     opp = result.opportunity
+    if dry:
+        return (_dry_banner(dry) + format_alert(opp, None, cfg.bankroll)
+                + _exposure_warning(conn, cfg) + _NOTES_FOOTER)
     opp_id = log_opportunity(conn, opp)
     warn = _exposure_warning(conn, cfg)
     if opp_id is None:  # a prior alert for this contract+side still stands
@@ -417,9 +435,9 @@ def _with_conn(cfg, fn):
         conn.close()
 
 
-def _check_job(cfg, model, demo, tour, a, b) -> str:
+def _check_job(cfg, model, demo, tour, a, b, dry: bool = False) -> str:
     with _client(cfg, demo) as client:
-        return _with_conn(cfg, lambda conn: run_check(client, model, cfg, conn, tour, a, b))
+        return _with_conn(cfg, lambda conn: run_check(client, model, cfg, conn, tour, a, b, dry=dry))
 
 
 def _scan_job(cfg, model, demo, tours) -> str:
@@ -493,6 +511,22 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = await asyncio.to_thread(_check_job, bd["cfg"], bd["model"], bd["demo"], tour, a, b)
     await _reply_chunked(update, text)
     schedule_pending_captures(context.application)  # auto-schedule a closing-line read for any new opp
+
+
+async def cmd_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/preview — identical to /check but writes NOTHING, for inspecting or demoing the engine
+    without contaminating the paper sample with an owner-timed opportunity. No capture is scheduled
+    because no opportunity was logged."""
+    if not _authed(update, context):
+        return
+    bd = context.bot_data
+    parsed = parse_check_args(" ".join(context.args), bd["default_tour"])
+    if parsed is None:
+        await update.message.reply_text("Usage: /preview <Player A> v <Player B> [atp|wta]  (never logged)")
+        return
+    a, b, tour = parsed
+    text = await asyncio.to_thread(_check_job, bd["cfg"], bd["model"], bd["demo"], tour, a, b, True)
+    await _reply_chunked(update, text)
 
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -713,6 +747,7 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
     app.add_error_handler(on_error)
     chat_filter = filters.Chat(chat_id=int(chat_id))
     app.add_handler(CommandHandler("check", cmd_check, filters=chat_filter))
+    app.add_handler(CommandHandler(["preview", "dry"], cmd_preview, filters=chat_filter))
     app.add_handler(CommandHandler(["find", "findmatch"], cmd_find, filters=chat_filter))
     app.add_handler(CommandHandler("scan", cmd_scan, filters=chat_filter))
     app.add_handler(CommandHandler("recent", cmd_recent, filters=chat_filter))

@@ -14,8 +14,10 @@ def _cents(price: float) -> str:
     return f"{price * 100:.0f}¢"
 
 
-def format_alert(opp: Opportunity, opp_id: int, bankroll: float) -> str:
-    """The mandated VALUE ALERT template. `opp_id` is the logged row id (the prior id on a dedup).
+def format_alert(opp: Opportunity, opp_id: int | None, bankroll: float) -> str:
+    """The mandated VALUE ALERT template. `opp_id` is the logged row id (the prior id on a dedup),
+    or None for a /preview dry run -- rendered as "not logged" rather than a fake id, so a preview
+    can never be mistaken for a row in the paper sample.
 
     `opp.liquidity` is order-book depth in CONTRACTS at the target ask; * price approximates the
     dollar depth available. Buying No on a "{market_player} wins" market backs the opponent -- the
@@ -29,7 +31,7 @@ def format_alert(opp: Opportunity, opp_id: int, bankroll: float) -> str:
         f"Model {opp.p_model:.1%} | Market {_cents(opp.price)} | Net edge {opp.net_edge:+.1%} (after fee)",
         f"Stake ${opp.suggested_stake:.0f} → {opp.contracts} contracts "
         f"(¼-Kelly on net edge, bankroll ${bankroll:,.0f})",
-        f"opp #{opp_id}",
+        f"opp #{opp_id}" if opp_id is not None else "not logged (preview)",
     ]
     if opp.flagged:
         lines.append("⚠️ Large edge — check for late news (injury/withdrawal)")

@@ -157,6 +157,34 @@ def test_run_check_dedup_shows_prior_id_and_no_second_row():
     conn.close()
 
 
+def test_run_check_dry_renders_the_alert_but_logs_nothing():
+    """/preview must be able to show a real qualifying alert -- the demo case -- while leaving the
+    paper sample byte-for-byte untouched. A dry run that logged would inject an owner-TIMED
+    opportunity into a sample whose whole point is unbiased scheduled sampling."""
+    conn = _db()
+    model, cfg = OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg()
+    with make_client() as client:
+        out = run_check(client, model, cfg, conn, "atp", "Aaa", "Bbb", dry=True)
+    assert 'BUY YES "Player Aaa wins"' in out      # the full alert still renders
+    assert "PREVIEW" in out and "NOT logged" in out
+    assert "opp #" not in out                       # no fake row id
+    assert recent_opportunities(conn, 10) == []     # THE POINT: nothing written
+    conn.close()
+
+
+def test_dry_run_does_not_consume_the_dedup_slot():
+    """A preview must not shadow a later real alert: if the dry run had written, the subsequent
+    /check would dedup against it and report 'already logged', losing the genuine row."""
+    conn = _db()
+    model, cfg = OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg()
+    with make_client() as client:
+        run_check(client, model, cfg, conn, "atp", "Aaa", "Bbb", dry=True)
+        real = run_check(client, model, cfg, conn, "atp", "Aaa", "Bbb")
+    assert "opp #1" in real and "already logged" not in real
+    assert len(recent_opportunities(conn, 10)) == 1
+    conn.close()
+
+
 def test_run_check_abstain_logs_no_row():
     conn = _db()
     with make_client() as client:  # p 0.51 vs 0.50 ask -> negative net edge -> no_edge abstain
@@ -664,7 +692,13 @@ def test_build_application_sets_bot_data_and_registers_handlers():
     assert app.bot_data["chat_id"] == 42 and app.bot_data["demo"] is True
     assert app.bot_data["default_tour"] == "atp"
     assert app.job_queue is not None  # job-queue extra installed -> auto CLV capture can schedule
-    assert len(app.handlers[0]) == 9  # check, find, scan, recent, result, close, stats, notes, help
+    # assert WHICH handlers are wired, not just how many -- a bare count says nothing about a
+    # mis-registration, and /preview must be present or the no-log path is unreachable from Telegram.
+    registered = {h.callback.__name__ for h in app.handlers[0]}
+    assert registered == {
+        "cmd_check", "cmd_preview", "cmd_find", "cmd_scan", "cmd_recent",
+        "cmd_result", "cmd_close", "cmd_stats", "cmd_notes", "cmd_help",
+    }
 
 
 def test_help_and_notes_text():

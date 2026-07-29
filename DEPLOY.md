@@ -1,4 +1,4 @@
-# Deploy — Hetzner US (forward-CLV paper test)
+# Deploy — DigitalOcean US (forward-CLV paper test)
 
 One-time provisioning for the always-on paper run. Paper only: the bot never places orders (no
 signer, no order endpoint reachable). For how the service itself works — the mount contract, the
@@ -6,82 +6,135 @@ weekly refresh, the systemd alternative — see README **"Run as a service"**.
 
 **Why a US region:** Kalshi is CFTC-regulated and US-only. The bot reads market data
 unauthenticated, which works fine from a US connection, but whether Kalshi geo-blocks or throttles a
-*foreign datacenter IP* is unverified — and discovering that mid-run would cost the sample. Pick
-Ashburn (`ash`) or Hillsboro (`hil`) and the question never arises. Step 4 verifies it before you
-commit weeks to the box.
+*foreign datacenter IP* is unverified — and discovering that mid-run would cost the sample. Pick a US
+region and the question never arises. Step 4 verifies it before you commit weeks to the box.
 
 **Measured requirements** (so don't overpay): peak RSS **186 MB** (`build_ratings`, the heaviest
 step), refresh runtime **~17 s**, match archives **~70 MB**, no inbound ports — Telegram long-polls,
-so there is no webhook to expose. The smallest shared-vCPU tier is 5–20× oversized. Verify current
-Hetzner tier naming/pricing yourself; anything with ≥1 vCPU / 1 GB RAM / 20 GB disk is ample.
+so there is no webhook to expose. Anything with ≥1 vCPU / **1 GB** RAM / 20 GB disk is ample.
+
+**Why DigitalOcean** (chosen 2026-07-28): Hetzner raised US prices in 2026 — `cpx11` in Ashburn was
+observed at **$20.49/mo**, against DO's **$6/mo** for equivalent-enough hardware. Kamatera is $4/mo
+and equally capable, but reviewers consistently note it suits experienced users, its creation flow
+configures every resource independently, and its cloud firewall is a paid add-on; the $2/mo saving
+isn't worth that on a first deploy. **Steps 3–9 are provider-agnostic** — only steps 0–2 below are
+DO-specific, so switching hosts later costs little. Always read live pricing rather than these lines.
 
 ---
 
-## 0. Buy the server (first time — start here)
+## 0. Account + SSH key (first time — start here)
 
-**Where:** [console.hetzner.cloud](https://console.hetzner.cloud) (Hetzner *Cloud* — not "Hetzner
-Robot", which is their dedicated-server product and far more expensive than this needs).
+**Where:** [cloud.digitalocean.com](https://cloud.digitalocean.com). One console, one product line —
+none of Hetzner's Console/Robot/konsoleH split to navigate.
 
-1. **Sign up** at [hetzner.com/cloud](https://www.hetzner.com/cloud) → *Sign up*. Use an email you
-   read; server notices go there.
-2. **Identity verification.** New Hetzner accounts are frequently asked for ID or a payment-method
-   verification before the first server can be created, and it is not always instant. Do this step
-   *before* the evening you plan to deploy — it is the one part of this that can block on someone
-   else. If you're asked to upload ID, that is normal for them, not a phishing page.
-3. **Add a payment method** — credit card, PayPal, or SEPA direct debit. Prices are listed **ex-VAT**;
-   VAT is added based on your billing country, so the invoice will read higher than the sticker.
-4. **Create a project** (e.g. `matador`). A project is just a container for servers/firewalls/keys.
+1. **Sign up** at [digitalocean.com](https://www.digitalocean.com). Use an email you read; billing and
+   incident notices go there.
+2. **Add a payment method** (card or PayPal). Expect a small temporary authorisation hold — that's
+   verification, not a charge. New accounts sometimes carry promotional credit; if you have any, it
+   covers the first months of this outright.
+3. **Projects are optional** — DO creates a default one at signup and the droplet form pre-fills it.
+   Pure organisation, no functional effect, and resources can be moved between projects later. Making
+   a `matador` project is fine tidiness; skipping it costs nothing either. If you do create one, its
+   **Environment** field is just a label — pick **Production**: `data/matador.db` holds a 12-week
+   sample that cannot be reconstructed, and the box runs unattended for months, so nothing here should
+   be treated as disposable.
 
-**What it costs:** the smallest shared-vCPU tier is roughly **€4–6/month**, billed **hourly** up to a
-monthly cap. Check the live price on the server-creation page — I'd rather you read the current number
-than trust one written here. Add ~€0.50–1/month if you keep an IPv4 address (do keep it; see step 1).
+**What it costs:** the **$6/month** Basic droplet (1 vCPU / 1 GB / 25 GB SSD / 1 TB transfer). A
+12-week paper test is therefore **~$18**.
 
-> **Billing gotcha:** Hetzner charges for a server that is merely **powered off**. Stopping it does
-> *not* stop the bill. To stop paying you must **delete** the server. So when the paper test ends,
-> back up `data/` first (below), then delete the server and its IPv4 — don't just shut it down.
+> **Do NOT pick the $4 (512 MB) tier.** Add it up: Ubuntu idle ~200 MB + Docker daemon ~100 MB + our
+> container ~250 MB, spiking during the weekly refresh — roughly 550 MB peak. 512 MB would need swap
+> and could OOM mid-refresh, which is a silent way to lose the sample. 1 GB is the floor.
 
-**Backups:** skip Hetzner's paid backup add-on. The only irreplaceable thing on the box is
-`data/matador.db` (the paper-bet log — tens of KB), and everything else rebuilds from git plus the
-upstream feed. A weekly pull from your laptop is enough and free:
+> **Billing gotcha:** DO charges for a droplet that is merely **powered off**. Shutting it down does
+> *not* stop the bill — you must **Destroy** it. When the test ends, back up `data/` first (below),
+> then destroy the droplet; also check **Networking → Reserved IPs**, since an unassigned reserved IP
+> bills on its own (we don't use one, but check).
+
+**Backups: enabled 2026-07-28, USAGE-BASED, daily, ~14-day retention.** Worth having at all because
+`data/matador.db` accumulates the project's only clean forward instrument, cannot be reconstructed, and
+automated backups need no weekly discipline.
+
+Choose **usage-based over plan-based**: plan-based charges a flat 20% of the droplet (~$1.20/mo)
+regardless of usage, while usage-based charges per GiB of *restorable size* — observed at **$0.04/GiB,
+weekly**, and this box uses only ~4–5 GB of its 25 GB, so **~$0.20/mo**. Retention is set in weeks;
+**4 weeks** is enough to reach back past corruption you didn't notice immediately, and extra weeks cost
+little since storage is incremental and our data barely changes (static OS/Docker layers, a DB growing
+by kilobytes). Weekly frequency is adequate: the worst case is losing ~6 days of bets, which costs a
+week of extra runtime rather than invalidating anything, since the gate counts bets and week-clusters.
+
+> A live DO snapshot is crash-consistent, not quiesced — normally a concern for a database mid-write,
+> but `storage.py` sets `PRAGMA journal_mode = WAL`, which is designed to survive abrupt termination, so
+> a restored snapshot replays the WAL exactly as it would recover from power loss.
+
+Backups are **disaster recovery** (restoring one builds a whole new droplet), so they don't replace
+pulling the DB to your laptop when you want to actually read results with `clv_report.py`:
 
 ```bash
-scp matador@<server-ip>:~/matador/data/matador.db ~/matador-backup-$(date +%F).db
+scp matador@<droplet-ip>:~/matador/data/matador.db ~/matador-backup-$(date +%F).db
 ```
 
-**Generate your SSH key first** (do this before creating the server, so you can paste it during
-creation). In WSL, from anywhere:
+**Your SSH key** (already generated on 2026-07-28 as `matador-vps`). To re-print the public half:
 
 ```bash
-ls ~/.ssh/id_ed25519.pub 2>/dev/null || ssh-keygen -t ed25519 -C "matador-laptop" -N ""
-cat ~/.ssh/id_ed25519.pub     # copy this entire line into Hetzner in step 1
+cat ~/.ssh/id_ed25519.pub          # paste this entire line into DO in step 1
+ssh-keygen -l -E md5 -f ~/.ssh/id_ed25519.pub   # MD5, if a console shows that format
 ```
 
-Keep the **private** key (`~/.ssh/id_ed25519`, no `.pub`) on your laptop only — never upload or commit
-it. Use WSL rather than Windows for this, since the repo and the `secrets/` you'll copy in step 3 both
-live on the WSL side.
+Keep the **private** key (`~/.ssh/id_ed25519`, no `.pub`) on your laptop only — never upload it, never
+commit it, and **do not put it in `secrets/`**: that directory gets copied to the server in step 3, and
+a private key on the server is exactly what you don't want. Use WSL rather than Windows, since the repo
+and the `secrets/` you'll copy both live on the WSL side.
 
-## 1. Create the server
+## 1. Create the droplet
 
-In your project → **Add Server**, and set these (defaults are fine for anything not listed):
+**Create → Droplets.** Set these; defaults are fine for anything not listed.
 
 | Field | Choose | Why |
 |-------|--------|-----|
-| **Location** | **Ashburn, VA** or **Hillsboro, OR** | US region — the Kalshi geo constraint above. Do not pick a German/Finnish location. |
-| **Image** | Ubuntu 24.04 LTS | What the commands below assume. |
-| **Type** | *Shared vCPU* → smallest tier (CPX11 / CX22 class) | Measured need is 186 MB RAM; the smallest tier is already 5–20× that. Note US locations may only offer the AMD (`CPX`) line. |
-| **Networking** | Leave **Public IPv4 enabled** | IPv6-only is a little cheaper but GitHub and some APIs get awkward over v6-only. Not worth the debugging. |
-| **SSH keys** | Paste the public key from step 0 | Do **not** set a root password — key-only from the start. |
-| **Firewall** | Create one: **inbound TCP 22 only** | Leave **outbound unrestricted** — the bot needs Kalshi, Telegram, the-odds-api, and GitHub. There is nothing to expose inbound; Telegram is long-polled, so no webhook. |
-| **Volumes / Backups / Placement** | Skip all | Nothing here needs them (see the backup note in step 0). |
-| **Name** | `matador` | Cosmetic. |
+| **Region** | **New York** or **San Francisco** | US — the Kalshi geo constraint above. Any datacenter number within the region is fine. |
+| **Datacenter** | any (e.g. NYC3) | No preference; all are US. |
+| **OS image** | Ubuntu **24.04 (LTS) x64** | Not 26.04: Docker's official apt repo has historically lagged new Ubuntu codenames by weeks–months, and step 2 is where you'd find out. 24.04 is supported into 2029 — far beyond this test. |
+| **Droplet type** | **Basic** (shared CPU) | DO's own framing — "for workloads that underuse dedicated threads" — is us exactly: 186 MB peak RSS, a ~17 s weekly refresh, otherwise an idle long-poll. *Premium/Dedicated* pays for sustained-load consistency we never generate. |
+| **CPU option** | **Regular (SSD)** — the $6 tier | 1 vCPU / 1 GB / 25 GB. Premium Intel/AMD (NVMe) costs more for disk speed that is irrelevant to a 1.6 MB JSON load and a weekly 17 s job. |
+| **Authentication** | **SSH Key** → add `matador-vps` | Choose SSH key, **not** password. Paste `~/.ssh/id_ed25519.pub`. If DO emails you a root password, the key didn't attach — stop and fix it. |
+| **Improved metrics monitoring** | ✅ enable | Free, tiny agent, gives CPU/RAM graphs and lets you set alerts. Worth having when the box runs unattended for months — a silent outage otherwise looks like "no edge". |
+| **IPv6** | ❌ **leave OFF** | Free, so disabling saves nothing — this is outbound reliability. Dual-stack makes Python walk `getaddrinfo` order and wait out a stalled connect, which fights `SharpOddsClient`'s deliberate **5 s** timeout and can silently cost the sharp reference the go-live gate binds on. We run **no inbound services**, and all four dependencies (Kalshi, Telegram, the-odds-api, GitHub) are IPv4-reachable. |
+| **Backups** | ❌ off | Paid; see the backup note above. |
+| **User data / cloud-init** | empty | Step 2 could go here, but a cloud-init failure means debugging a boot log instead of watching a command fail interactively. |
+| **VPC / Private networking** | default, ignore | For droplet-to-droplet traffic; we have one box. |
+| **Hostname** | `matador` | Becomes the shell prompt once you SSH in — a cheap guard against running something destructive while thinking you're on your laptop. Letters, digits, hyphens only. |
+| **Tags** | none | Metadata for filtering at scale; no functional effect. |
 
-Click **Create & Buy now**. Billing starts at creation. The public IPv4 shown on the server page is
-your `<server-ip>` for every command below.
+Click **Create Droplet**. Billing starts immediately. The public IPv4 on the droplet page is your
+`<droplet-ip>` for every command below.
+
+DO's droplet form has no firewall picker — you attach one afterwards, and it's **free**.
+
+### Then attach the cloud firewall (after the step-4 Kalshi check, not before)
+
+Run the step-4 reachability check first — no point firewalling a box you might destroy. Then
+**Networking → Firewalls → Create Firewall**. DO pre-populates sensible rules; you want exactly:
+
+| Direction | Protocol | Port | Source / Destination |
+|---|---|---|---|
+| Inbound | TCP | **22** | `0.0.0.0/0` |
+| Outbound | ICMP + TCP + UDP | all | all destinations (DO's default) |
+
+Delete any pre-populated inbound HTTP/HTTPS rules — we serve nothing. **Leave the outbound rules
+alone**: the bot needs Kalshi, Telegram, the-odds-api, GitHub, and apt. Then under **Apply to
+Droplets**, select `matador`.
+
+> ⚠️ **Confirm the inbound SSH rule exists BEFORE applying.** A firewall attached with no inbound
+> rule drops everything including your live SSH session, and recovery means DO's browser console.
+>
+> Tightening `Source` to your home IP is tempting, but home IPs rotate and locking yourself out is
+> worse than an exposed port that only accepts keys. Step 2's `ufw` adds a second layer on-host.
 
 ## 2. Harden and install Docker
 
 ```bash
-ssh root@<server-ip>
+ssh root@<droplet-ip>
 
 adduser --disabled-password --gecos "" matador     # gets uid 1000 -> matches the container user
 usermod -aG sudo matador
@@ -128,8 +181,8 @@ first two from your laptop (never commit them):
 
 ```bash
 # from the local repo root
-scp config.yaml matador@<server-ip>:~/matador/config.yaml
-scp -r secrets   matador@<server-ip>:~/matador/          # .env + kalshi pem + odds_api_key.txt
+scp config.yaml matador@<droplet-ip>:~/matador/config.yaml
+scp -r secrets   matador@<droplet-ip>:~/matador/          # .env + kalshi pem + odds_api_key.txt
 ```
 
 Then on the server:
@@ -217,16 +270,16 @@ for the rest of the paper test.
 
 ## 9. When the paper test ends — tear down so billing stops
 
-A powered-off Hetzner server still bills. In order:
+A powered-off DO droplet still bills. In order:
 
 ```bash
 # 1. from your laptop -- save the only irreplaceable artifact
-scp matador@<server-ip>:~/matador/data/matador.db ~/matador-final.db
-scp matador@<server-ip>:~/matador/logs/matador.log ~/matador-final.log
+scp matador@<droplet-ip>:~/matador/data/matador.db ~/matador-final.db
+scp matador@<droplet-ip>:~/matador/logs/matador.log ~/matador-final.log
 ```
 
-2. Hetzner console → server → **Delete**. Then check **Networking → Primary IPs** and delete the
-   released IPv4 too — an unassigned IP keeps billing on its own.
+2. DO console → droplet → **Destroy**. Then check **Networking → Reserved IPs** — an unassigned
+   reserved IP bills on its own (we don't create one, but confirm).
 3. Remove the deploy key from the GitHub repo (Settings → Deploy keys).
 
 Read the final verdict off the backed-up DB locally with

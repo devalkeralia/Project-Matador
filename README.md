@@ -62,7 +62,7 @@ I trade the signal manually on Kalshi.
 | [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) | Every decision + rationale; the four-layer data stack; the fair-value model + contract math; open questions; interview record. |
 | [`RESEARCH-KALSHI.md`](./RESEARCH-KALSHI.md) | Sourced research: Kalshi API/fees/mechanics, the in-play viability verdict, live-score API comparison, and the UTS assessment — with URLs and a build-time verify checklist. |
 | [`CLAUDE.md`](./CLAUDE.md) | Auto-loaded by every session in this repo: scope, hard rules (secrets, no auto-bet), GitHub remote, settled design facts, and the Karpathy dev principles. |
-| [`DEPLOY.md`](./DEPLOY.md) | One-time VPS provisioning for the paper run (Hetzner US): server + firewall, deploy key, the three gitignored things a clone won't bring, the Kalshi-reachability check, Docker-only model bootstrap, and the refresh cron. |
+| [`DEPLOY.md`](./DEPLOY.md) | One-time VPS provisioning for the paper run (DigitalOcean US, $6/mo): droplet + firewall, deploy key, the three gitignored things a clone won't bring, the Kalshi-reachability check, Docker-only model bootstrap, refresh cron, and teardown. Steps 3–9 are provider-agnostic. |
 
 ## Recommended build setup
 
@@ -77,9 +77,9 @@ I trade the signal manually on Kalshi.
 
 Nothing left to build. The remaining work is operational, in this order:
 
-1. **Provision the always-on host** — [`DEPLOY.md`](./DEPLOY.md), which starts at Hetzner account
-   signup and ends at the weekly-refresh cron. Note that `config.yaml`, `secrets/`, and `data/` are
-   all gitignored, so a fresh clone does **not** bring them; the runbook handles each.
+1. **Provision the always-on host** — [`DEPLOY.md`](./DEPLOY.md), which starts at DigitalOcean account
+   signup ($6/mo droplet) and ends at the weekly-refresh cron. Note that `config.yaml`, `secrets/`, and
+   `data/` are all gitignored, so a fresh clone does **not** bring them; the runbook handles each.
 2. **Run the forward CLV paper test** — accumulate 200+ Pinnacle-referenced paper bets across 12+ ISO
    weeks. See the **Phase-6 forward-CLV paper-test runbook** below for the protocol. Do **not** change
    `p_model` mid-run: any model change invalidates the accumulated sample. The liquidity gate is frozen

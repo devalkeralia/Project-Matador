@@ -35,9 +35,12 @@ paper test decides; no real money until the gate is MET. See `README.md` (runboo
   (the whole dir is gitignored) — never leave keys/tokens loose in the repo root. `.env`
   (gitignored) holds config; `.env.example` is the template.
 - **No automated bet placement.** Signals only; the user trades manually on Kalshi.
-- **Remote:** `origin` → **https://github.com/devalkeralia/Project-Matador** (private). Auth is
-  via the `gh` CLI (credential helper already configured; PAT lives in `secrets/`) — never embed
-  the token in a URL or commit. **Ask before committing or pushing.**
+- **Remote:** `origin` → **https://github.com/devalkeralia/Project-Matador** — **PUBLIC** (verified
+  2026-07-28 via `gh repo view`; this line previously said "private", which was wrong). History is
+  clean of secrets: nothing under `secrets/`, no `*.pem`/`*.env`/token file has ever been committed —
+  keep it that way, since the repo is world-readable. Auth is via the `gh` CLI (credential helper
+  configured; PAT lives in `secrets/`) — never embed the token in a URL or commit. **Ask before
+  committing or pushing.**
 - **Develop against the Kalshi DEMO environment first** (`external-api.demo.kalshi.co`).
 
 ## Development principles (Karpathy)

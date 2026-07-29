@@ -8,12 +8,13 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 280 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 282 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
 model probability, per-side edge math) — logging qualifying paper opportunities. `/find` lists open
-matches ranked by model strength; **`/close`** captures the closing line (manual + auto-scheduled at
+matches ranked by model strength; **`/preview`** is `/check` that writes **nothing** (safe to run or
+demo mid-paper-test); **`/close`** captures the closing line (manual + auto-scheduled at
 match start), **`/result`** records outcomes, **`/stats`** reports hit rate, P&L, and **closing-line
 value with a cluster-bootstrap 95% CI — the go-live metric**; also `/recent`, `/notes`, `/help`.
 On-demand only for `/check`; owner-chat-gated; **never places orders**. Phases 1–3
@@ -188,7 +189,7 @@ markets where the gate thresholds are meaningful.
 
 ## Changelog
 
-- **2026-07-29 — Deployed to DigitalOcean; duplicate-logging bug found live and fixed; 280 tests.**
+- **2026-07-29 — Deployed to DigitalOcean; duplicate-logging bug found live and fixed, `/preview` added; 282 tests.**
   The bot is running on a $6/mo SFO2 droplet (Ubuntu 24.04, uid-1000 user, key-only SSH, 2 GB swap,
   Docker + Compose, DO firewall + ufw, Monday-06:00-UTC refresh cron test-executed, reboot survival
   verified with 4 pending captures restored from the DB). Kalshi returns 200 from SFO2, so the geo
@@ -201,6 +202,14 @@ markets where the gate thresholds are meaningful.
     the ≥200 gate *and* double-weights the match in the CLV mean and cluster bootstrap — narrowing the
     CI and biasing **toward** a false go-live. Fixed by sorting markets by ticker so the anchor is
     deterministic; two regression tests, both verified to fail without the fix.
+  - **`/preview` added** so the engine can be inspected or demoed mid-run without contaminating the
+    sample. `/check` *logs* a qualifying opportunity, and one logged at an owner-chosen moment is
+    exactly the timing bias the 8-hourly scheduled scan exists to remove. `/preview` evaluates and
+    renders identically but writes nothing — deliberately **not**-writing rather than
+    writing-and-filtering-later, since a filter every analysis path must remember is one forgotten
+    call away from silent contamination. Verified end-to-end against live Kalshi (full alert rendered,
+    `rows before 6 after 6`). **During the run: `/preview`, `/find`, `/stats`, `/recent`, `/notes` are
+    safe; `/result` and `/close` are required for the gate to be readable; avoid `/check` and `/scan`.**
   - Deploy runbook is [`DEPLOY.md`](./DEPLOY.md). Deviations applied vs the written steps: a NOPASSWD
     sudoers drop-in (`--disabled-password` + `sudo` was unusable), neutralising `sshd_config.d/*.conf`
     password-auth overrides, the swapfile, HTTPS clone instead of a deploy key (the repo is public),

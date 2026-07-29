@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from itertools import chain
 from pathlib import Path
 
+import httpx
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, filters
 
@@ -911,6 +912,31 @@ def _heartbeat_job(cfg, drift: list[str] | None = None, scan: dict | None = None
     return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg, drift, scan, credits))
 
 
+def ping_dead_man_switch(url: str | None, timeout: float = 5.0) -> str | None:
+    """Ping an external dead-man's-switch check (e.g. healthchecks.io). Returns a log line, or None
+    when no URL is configured. NEVER raises.
+
+    Why an external service at all: every other liveness signal here requires the OWNER to notice the
+    ABSENCE of a routine message, every day, for the length of the run -- and the failures the
+    heartbeat exists to catch (dead droplet, crash-looping container, a Telegram long-poll wedged by a
+    second poller on the same token) are exactly the failures that also stop the heartbeat. This
+    inverts it: the check alerts when the pings STOP, so absence becomes an active notification instead
+    of something a human has to spot. The weekly refresh DM is not a substitute -- refresh_notify runs
+    in a separate `docker compose run --rm` container and would still report 'refresh OK' with the bot
+    container wedged.
+
+    Called only AFTER the heartbeat DM has actually been sent, so the check measures the real
+    end-to-end path (engine -> DB -> Telegram) rather than merely 'the process is scheduled'. That is
+    what makes a wedged poller detectable: the process is alive, the DM never lands, the pings stop.
+    Set the check's grace to ~26h so one late daily beat doesn't cry wolf.
+    """
+    if not url:
+        return None
+    try:
+        r = httpx.get(url, timeout=timeout)
+        return f"dead-man ping HTTP {r.status_code}"
+    except Exception as exc:   # a healthchecks outage must never affect the bot
+        return f"dead-man ping failed: {type(exc).__name__}: {exc}"
 
 
 async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -924,6 +950,10 @@ async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.exception("heartbeat failed")
         return
     await context.bot.send_message(chat_id=bd["chat_id"], text=msg)
+    # AFTER the DM landed -- see ping_dead_man_switch on why the ordering is the whole point.
+    status = await asyncio.to_thread(ping_dead_man_switch, bd.get("healthcheck_url"))
+    if status:
+        log.info("%s", status)
 
 
 async def on_startup(application: Application) -> None:
@@ -938,7 +968,8 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("unhandled error in handler/job", exc_info=context.error)
 
 
-def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, default_tour: str = "atp") -> Application:
+def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, default_tour: str = "atp",
+                      healthcheck_url: str | None = None) -> Application:
     """Build the PTB app: stash shared read-only state in bot_data and register the commands,
     each gated to the owner's chat both by filters.Chat and the in-handler is_authorized check."""
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
@@ -948,7 +979,7 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
     if drift:
         log.warning("MODEL/CONFIG DRIFT -- predict() uses the ARTIFACT's values: %s", "; ".join(drift))
     app.bot_data.update(cfg=cfg, model=model, demo=demo, chat_id=int(chat_id),
-                        default_tour=default_tour, drift=drift)
+                        default_tour=default_tour, drift=drift, healthcheck_url=healthcheck_url)
     app.add_error_handler(on_error)
     chat_filter = filters.Chat(chat_id=int(chat_id))
     app.add_handler(CommandHandler("check", cmd_check, filters=chat_filter))

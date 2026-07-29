@@ -148,6 +148,9 @@ class Secrets(BaseSettings):
     kalshi_private_key_path: str
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    # Dead-man's switch: a healthchecks.io-style check URL, pinged only AFTER each heartbeat DM lands.
+    # Unset -> no ping, and liveness is back to the owner noticing a missing DM (bot.ping_dead_man_switch).
+    healthcheck_url: str | None = None
 
 
 def load_config(path: str | Path = "config.yaml") -> Config:

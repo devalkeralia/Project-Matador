@@ -455,6 +455,69 @@ def test_heartbeat_header_degrades_when_anything_is_wrong():
     conn.close()
 
 
+# ---- dead-man's switch ----
+
+def test_ping_dead_man_switch_skips_when_unconfigured_and_never_raises(monkeypatch):
+    import matador.bot as bot
+    assert bot.ping_dead_man_switch(None) is None      # opt-in: no URL -> no network call at all
+    assert bot.ping_dead_man_switch("") is None
+
+    def boom(url, timeout=None):
+        raise httpx.ConnectError("healthchecks down")
+    monkeypatch.setattr(bot.httpx, "get", boom)
+    # A monitoring outage must never propagate into the bot -- the switch is the LEAST important thing here.
+    assert "dead-man ping failed" in bot.ping_dead_man_switch("https://hc-ping.com/uuid")
+
+
+def test_heartbeat_pings_the_switch_ONLY_AFTER_the_dm_lands(tmp_path, monkeypatch):
+    """The ordering is the entire value of the switch.
+
+    Pinging before (or independently of) the DM would prove only 'the job is scheduled' -- which is
+    still true when the long-poll is wedged and no message is reaching the owner. Pinging after a
+    successful send makes the check measure engine -> DB -> Telegram, so a wedged poller stops the
+    pings and the external service raises the alarm.
+    """
+    import matador.bot as bot
+    app = _app_for_job(tmp_path)
+    app.bot_data["healthcheck_url"] = "https://hc-ping.com/uuid"
+    ctx = _FakeJobContext(app)
+    order = []
+
+    async def spy_send(chat_id, text):
+        order.append("dm")
+    monkeypatch.setattr(ctx.bot, "send_message", spy_send)
+    monkeypatch.setattr(bot.httpx, "get", lambda url, timeout=None: order.append("ping") or _Ping())
+    asyncio.run(bot.heartbeat_job(ctx))
+    assert order == ["dm", "ping"]
+
+
+def test_heartbeat_does_not_ping_when_the_dm_itself_fails(tmp_path, monkeypatch):
+    """A failed DM must leave the pings STOPPED -- that silence is the alert."""
+    import matador.bot as bot
+    app = _app_for_job(tmp_path)
+    app.bot_data["healthcheck_url"] = "https://hc-ping.com/uuid"
+    ctx = _FakeJobContext(app)
+    pinged = []
+
+    async def failing_send(chat_id, text):
+        raise RuntimeError("telegram 409 conflict: another poller holds this token")
+    monkeypatch.setattr(ctx.bot, "send_message", failing_send)
+    monkeypatch.setattr(bot.httpx, "get", lambda url, timeout=None: pinged.append(url) or _Ping())
+    with pytest.raises(RuntimeError):
+        asyncio.run(bot.heartbeat_job(ctx))
+    assert pinged == []            # no DM -> no ping -> the check goes red, which is the point
+
+
+class _Ping:
+    status_code = 200
+
+
+def test_build_application_carries_the_healthcheck_url():
+    app = build_application("1:x", make_cfg(), object(), chat_id=42, healthcheck_url="https://hc-ping.com/u")
+    assert app.bot_data["healthcheck_url"] == "https://hc-ping.com/u"
+    assert build_application("1:x", make_cfg(), object(), chat_id=42).bot_data["healthcheck_url"] is None
+
+
 def test_sharp_client_records_remaining_credits_for_the_heartbeat():
     """Exhaustion is otherwise silent: fetch raises, the caller swallows, sharp_close stays NULL,
     and the only symptom is sharp_coverage sagging under the co-gate weeks later."""

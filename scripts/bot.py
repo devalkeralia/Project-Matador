@@ -69,7 +69,8 @@ def main() -> None:
         raise SystemExit("TELEGRAM_TOKEN and TELEGRAM_CHAT_ID must be set in secrets/.env")
 
     model = Model.from_artifact(cfg.model_path)
-    app = build_application(secrets.telegram_token, cfg, model, secrets.telegram_chat_id, demo=args.demo)
+    app = build_application(secrets.telegram_token, cfg, model, secrets.telegram_chat_id, demo=args.demo,
+                            healthcheck_url=secrets.healthcheck_url)
     log.info("Matador bot up (%s reads); polling Telegram. Ctrl-C to stop.", "DEMO" if args.demo else "PROD")
     app.run_polling()
 

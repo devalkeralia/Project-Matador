@@ -180,6 +180,32 @@ Before any real money we test edge vs the market (not just calibration vs outcom
   BY-NC-SA) — not match results; useless for v1/market-beating, but the best data to calibrate the
   **v2** serve/return point-by-point Markov model (parked with the TML serve stats).
 
+## Dedup identity = the ECONOMIC POSITION, not the market anchor (2026-07-29)
+
+**Settled: `log_opportunity` dedups on `(event_ticker, player actually backed)` via
+`storage.last_position()` — NOT on `(market_ticker, side)`.** Don't revert this to the "obvious" key.
+
+A Kalshi event has one market per player, so **one position is expressible two ways**: yes on the
+backed player's market, or no on the opponent's. Which anchor you get depends on the caller:
+- `engine.scan_series` / `scan_outright_finals` sort by ticker (deterministic)
+- `client.resolve_match` (behind `/check` and `/preview`) anchors on **whichever player was typed first**
+
+So the same bet arrived under two different `(market_ticker, side)` keys and **logged twice** — seen
+live as `Shapovalov/Hijikata` under both `-SHA/no` and `-HIJ/yes`, both backing Hijikata at 41¢. It
+also self-propagates: one reversed-order `/check` logs under a non-canonical anchor, and the next
+scheduled scan then duplicates it with no further action.
+
+Why it's not cosmetic: a duplicate **double-weights** the match in the CLV mean *and* in the ISO-week
+cluster bootstrap, narrowing the CI, and inflates the count toward the ≥200 floor — biasing the
+go-live gate **toward a false positive**, invisible until the gate is read weeks later.
+
+Fixed in the **logging layer only**. Deliberately NOT by re-anchoring `resolve_match`: that would
+change which market's orderbook `/check` prices, i.e. **selection**, which is frozen during the run.
+
+History worth knowing: the first fix (`799688a`) sorted the anchor in the two scan paths and was
+believed complete; the third caller was missed and found later by adversarial review. When touching
+this, **grep every writer of the dedup key**, not just the path you can reproduce.
+
 ## Underdog over-rating — the first-order defect (2026-07-27)
 
 **The model over-rates the market underdog by +4.3pp overall — 7.0 SEs from zero — while the market

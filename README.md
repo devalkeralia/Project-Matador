@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 282 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 297 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -191,6 +191,26 @@ markets where the gate thresholds are meaningful.
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
+
+- **2026-07-29 — Adversarial review round: the dedup fix was INCOMPLETE + 3 silent-failure holes closed; 297 tests.**
+  A Fable-5 multi-agent review (5 lenses, each adversarially verified; 21 findings confirmed) of the diff
+  since the last full review returned **fix-before-continuing** — but *not* restart-the-sample, since
+  `p_model`, the artifact, `min_price` and `shrinkage_n0` were unchanged since the run began, so only the
+  ledger was ever at risk and it was clean.
+  - **The earlier dedup fix missed a third caller.** `client.resolve_match` (behind `/check`) anchors on
+    whichever player is typed first, so it still produced a second key for an already-logged position —
+    and it self-propagates via the next scheduled scan. Now deduped on the **economic position**; see
+    DESIGN-DECISIONS **"Dedup identity"**.
+  - **Three silent-failure holes**, all in code written hours earlier: `_model_freshness` used `max()`
+    across tours so a *single-tour* freeze never warned (ATP fresh + WTA frozen 88d reported "1d" — and
+    upstream broke per-directory before); an all-404 fetch was DM'd as "Weekly refresh OK"; and the
+    notifier grepped a 20 KB tail of an append-only 12-week log, so one real rejection would cry wolf
+    every Monday after.
+  - `_is_usable_csv` now requires a data row with the header's field count, and `artifact_config_drift()`
+    warns when the loaded artifact disagrees with config (`predict()` uses the **artifact's** params) —
+    warns rather than refuses, since crash-looping would stop sampling entirely.
+  - Two findings were **refuted** rather than acted on: the DB was not contaminated, and the droplet was
+    not behind HEAD.
 
 - **2026-07-29 — Deployed to DigitalOcean; duplicate-logging bug found live and fixed, `/preview` added; 282 tests.**
   The bot is running on a $6/mo SFO2 droplet (Ubuntu 24.04, uid-1000 user, key-only SSH, 2 GB swap,

@@ -180,6 +180,51 @@ Before any real money we test edge vs the market (not just calibration vs outcom
   BY-NC-SA) — not match results; useless for v1/market-beating, but the best data to calibrate the
   **v2** serve/return point-by-point Markov model (parked with the TML serve stats).
 
+## In-play mean-reversion: overreaction is REAL but NOT harvestable (2026-07-29)
+
+The v2 in-play pilot's premise, tested offline on Kalshi 1-minute candlesticks for **2,615 jump
+events across 1,604 settled markets** (2026-05-24..07-29). Script: `scripts/inplay_overreaction.py`,
+which carries its own pre-registration. **Do not re-open this without new information.**
+
+Method: a set completion is the largest, fastest price event in a match, so it appears as a jump in
+the candles — no live-score feed needed. Everything is measured on the **mid** (candles carry
+`yes_bid`/`yes_ask`), because the trade price bounces across the spread and would manufacture fake
+reversion. `continuation = sign(jump) × (mid[t+k] − mid[t])`; negative = reversion.
+
+**1. Does Kalshi overreact? YES.** Mid reverts −1.5c @15m (CI excludes 0), monotone in jump size
+(−0.9c for 10–15c jumps, −3.4c for 15–25c, −9.7c for 25c+), at ~3x the half-spread. This
+**contradicts** RESEARCH-KALSHI §3, which guessed an order book would reprice efficiently.
+
+**2. Is it harvestable? NO.** The trade the reversion implies is FADING the jump (not holding the
+underdog through it — that conditions on the jump having happened and is just the pre-match bet).
+Fading, crossing the spread both ways and net of fees: **−4.1c/contract @30m, CI entirely below 0**.
+The inefficiency is real but smaller than the friction needed to reach it.
+
+**3. It is tail-driven.** Mean reversion −1.5c but **median +1.0c** — most jumps CONTINUE slightly;
+a minority revert hard. So the spec-style rule "never chase momentum" is not supported: momentum
+persists more often than it reverts. And "steady small profits" is the one regime the fee curve
+(`0.07·P·(1−P)`, peaking at 50c) destroys.
+
+**4. The robust, ACTIONABLE finding is negative.** Fading a jump that lands **mid-book (35–65c)
+loses 6–9c/contract**, CI excluding zero in the combined holdout AND independently in ATP (−8.6c)
+and WTA (−6.2c), n=1,035. It has a mechanical cause — you pay peak fees exactly where you'd trade.
+**Don't trade in-play reversion mid-book.**
+
+**5. The extreme-price result was LOOK-AHEAD BIAS — the trap worth remembering.** Fading jumps
+landing <20c or >80c appeared to earn +13..+19c, replicated on WTA across both temporal halves
+(+20.1c early / +18.3c late), and passed every statistical check. It is an artifact: requiring a
+30-minute horizon to fit before the settlement buffer **discards 67% of extreme-price jumps** —
+precisely those where the match ended soon after (median 27 min to close, vs 70 min for retained).
+A jump to >80c means someone is nearly won; if they close it out the event is dropped. What survives
+is the subset where the leader FAILED to close out, which is exactly where price reverts. The
+"edge" reads *given the favourite didn't win quickly, fading paid* — unknowable at trade time.
+Lesson: when conditioning on a future horizon existing, check what that requirement silently
+selects. A suspiciously large effect (18c on a binary market) is a signal to hunt the artifact.
+
+**Also unmeasured, and required before any in-play trading:** achievable DEPTH. `volume_fp` units are
+unverified, live set markets were seen quoting 1–1681 contracts, and extreme-price events arrive at
+~1.4/week on WTA — not operable manually even if an edge existed.
+
 ## Dedup identity = the ECONOMIC POSITION, not the market anchor (2026-07-29)
 
 **Settled: `log_opportunity` dedups on `(event_ticker, player actually backed)` via

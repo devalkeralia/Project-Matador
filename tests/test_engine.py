@@ -244,6 +244,54 @@ def test_scan_series_yields_alert_with_sibling_opponent():
     assert results[0].opportunity.event_ticker == _EVENT  # markets[0]=yes, markets[1]=opponent
 
 
+class SymmetricModel:
+    """Answers in EITHER argument order (unlike OrientedModel, which abstains when swapped).
+    Required for the market-order tests: with OrientedModel a flipped anchor abstains, which would
+    mask the very duplicate these tests exist to catch."""
+
+    def predict(self, tour, name_a, name_b, *args, **kwargs):
+        return WinProbability(0.60 if name_a == "Player Aaa" else 0.40, "ok")
+
+
+_ORDER_FORWARD = {_EVENT: [_mk(_EVENT + "-A", "Player Aaa"), _mk(_EVENT + "-B", "Player Bbb")]}
+_ORDER_REVERSED = {_EVENT: [_mk(_EVENT + "-B", "Player Bbb"), _mk(_EVENT + "-A", "Player Aaa")]}
+
+
+def test_scan_series_anchor_is_stable_when_kalshi_swaps_market_order():
+    """Kalshi returns an event's two player-markets in arbitrary order. The anchor must not depend
+    on that order, because market_ticker is half the dedup key -- a flip logged the SAME position
+    twice (seen live 2026-07-29: Shapovalov/Hijikata as both -SHA/no and -HIJ/yes)."""
+    def anchor(markets):
+        with make_client(markets=markets) as client:
+            (r,) = list(scan_series(client, SymmetricModel(), make_cfg(), "atp"))
+        return r.opportunity.market_ticker, r.opportunity.side
+
+    assert anchor(_ORDER_FORWARD) == anchor(_ORDER_REVERSED)   # same anchor either way
+    assert anchor(_ORDER_FORWARD)[0] == _EVENT + "-A"          # deterministically the lower ticker
+
+
+def test_swapped_market_order_does_not_log_the_position_twice():
+    """End-to-end guard on the real consequence: two scans seeing opposite market order must produce
+    ONE row, not two. Two rows double-weight the match in the CLV mean and bootstrap, narrowing the
+    CI and biasing the go-live gate toward a false positive. Both scans back the SAME player, so a
+    second row can only mean the dedup key moved."""
+    conn = connect(":memory:")
+    init_db(conn)
+    backed = []
+    for markets in (_ORDER_FORWARD, _ORDER_REVERSED):
+        with make_client(markets=markets) as client:
+            for r in scan_series(client, SymmetricModel(), make_cfg(), "atp"):
+                assert r.status == "alert", f"setup broken: {r.reason}"   # an abstain would mask the bug
+                o = r.opportunity
+                backed.append(o.market_player if o.side == "yes" else o.opponent)
+                log_opportunity(conn, o)
+
+    assert backed == ["Player Aaa", "Player Aaa"], f"both scans must back the same player, got {backed}"
+    rows = conn.execute("SELECT market_ticker, side FROM opportunities").fetchall()
+    assert len(rows) == 1, f"expected 1 deduped row, got {len(rows)}: {[tuple(r) for r in rows]}"
+    conn.close()
+
+
 def test_scan_series_skips_single_market_event():
     with make_client(markets={_EVENT: [_mk(_EVENT + "-A", "Player Aaa")]}) as client:
         results = list(scan_series(client, OrientedModel("Player Aaa", "Player Bbb", 0.6), make_cfg(), "atp"))

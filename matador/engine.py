@@ -228,7 +228,12 @@ def scan_series(client, model, cfg, tour) -> Iterator[EvalResult]:
         return
     for event in client.get_events(series, status="open"):
         try:
-            markets = client.get_markets(event_ticker=event["event_ticker"])
+            # Sort by ticker so the anchor market is DETERMINISTIC. Kalshi returns an event's two
+            # player-markets in arbitrary order; a flip between scans changed market_ticker, which
+            # defeated the (market_ticker, side) dedup in log_opportunity and logged the SAME
+            # economic position twice under the two different anchors -- double-weighting that match
+            # in the CLV mean and bootstrap, narrowing the CI, biasing TOWARD go-live.
+            markets = sorted(client.get_markets(event_ticker=event["event_ticker"]), key=lambda m: m.ticker)
             if len(markets) < 2:
                 continue  # need both player-markets to know the matchup
             yes_market, opp_market = markets[0], markets[1]
@@ -259,7 +264,9 @@ def scan_outright_finals(client, model, cfg, tour) -> Iterator[EvalResult]:
         return
     for event in client.get_events(outright, status="open"):
         try:
-            active = [m for m in client.get_markets(event_ticker=event["event_ticker"]) if m.status == "active"]
+            # sorted for the same deterministic-anchor reason as scan_series above
+            active = sorted((m for m in client.get_markets(event_ticker=event["event_ticker"]) if m.status == "active"),
+                            key=lambda m: m.ticker)
             if len(active) != 2:
                 continue  # only a final (two left) collapses the outright to a head-to-head
             yes_market, opp_market = active[0], active[1]

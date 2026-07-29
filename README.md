@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 278 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 280 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -177,6 +177,24 @@ markets where the gate thresholds are meaningful.
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
+
+- **2026-07-29 — Deployed to DigitalOcean; duplicate-logging bug found live and fixed; 280 tests.**
+  The bot is running on a $6/mo SFO2 droplet (Ubuntu 24.04, uid-1000 user, key-only SSH, 2 GB swap,
+  Docker + Compose, DO firewall + ufw, Monday-06:00-UTC refresh cron test-executed, reboot survival
+  verified with 4 pending captures restored from the DB). Kalshi returns 200 from SFO2, so the geo
+  risk is closed.
+  - **Dedup bug caught by reading the first live rows.** Kalshi returns an event's two player-markets
+    in arbitrary order and `scan_series`/`scan_outright_finals` used `markets[0]` as the anchor, so an
+    ordering flip between scans changed `market_ticker` — half the `(market_ticker, side)` dedup key.
+    The identical position then logged **twice** under opposite anchors (observed: Shapovalov/Hijikata
+    as both `-SHA/no` and `-HIJ/yes`, both backing Hijikata at 41¢). That inflates the bet count toward
+    the ≥200 gate *and* double-weights the match in the CLV mean and cluster bootstrap — narrowing the
+    CI and biasing **toward** a false go-live. Fixed by sorting markets by ticker so the anchor is
+    deterministic; two regression tests, both verified to fail without the fix.
+  - Deploy runbook is [`DEPLOY.md`](./DEPLOY.md). Deviations applied vs the written steps: a NOPASSWD
+    sudoers drop-in (`--disabled-password` + `sudo` was unusable), neutralising `sshd_config.d/*.conf`
+    password-auth overrides, the swapfile, HTTPS clone instead of a deploy key (the repo is public),
+    and transferring only the three secrets the bot actually references rather than all of `secrets/`.
 
 - **2026-07-27 — Underdog over-rating found + two pre-deploy fixes; 278 tests.** Chasing the alert
   profile surfaced the model's **first-order defect**: it over-rates the market underdog by **+4.3pp**

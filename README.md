@@ -34,12 +34,13 @@ and measured the **layoff** question — real in probability space but not actio
 was deliberately **not** built and `staleness` is logged for a forward sharp-CLV read instead, with
 pre-registered criteria (see DESIGN-DECISIONS **"Layoff / inactivity"**).
 
-**What remains is only the paper run itself:** provision the host per [`DEPLOY.md`](./DEPLOY.md), then
-accumulate 200+ sharp-referenced paper bets across 12+ ISO weeks and read the gate. Model still has
-**no demonstrated edge** — do not bet real money until the gate is MET.
+**DEPLOYED 2026-07-29** on a $6/mo DigitalOcean droplet (SFO2) per [`DEPLOY.md`](./DEPLOY.md) — Kalshi
+reachable from the region, refresh cron installed and test-executed, reboot survival verified. **What
+remains is only the paper run itself:** accumulate 200+ sharp-referenced paper bets across 12+ ISO weeks
+and read the gate. Model still has **no demonstrated edge** — do not bet real money until the gate is MET.
 **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-27_
+_Last updated: 2026-07-29_
 
 ## What this is
 
@@ -62,7 +63,7 @@ I trade the signal manually on Kalshi.
 | [`DESIGN-DECISIONS.md`](./DESIGN-DECISIONS.md) | Every decision + rationale; the four-layer data stack; the fair-value model + contract math; open questions; interview record. |
 | [`RESEARCH-KALSHI.md`](./RESEARCH-KALSHI.md) | Sourced research: Kalshi API/fees/mechanics, the in-play viability verdict, live-score API comparison, and the UTS assessment — with URLs and a build-time verify checklist. |
 | [`CLAUDE.md`](./CLAUDE.md) | Auto-loaded by every session in this repo: scope, hard rules (secrets, no auto-bet), GitHub remote, settled design facts, and the Karpathy dev principles. |
-| [`DEPLOY.md`](./DEPLOY.md) | One-time VPS provisioning for the paper run (DigitalOcean US, $6/mo): droplet + firewall, deploy key, the three gitignored things a clone won't bring, the Kalshi-reachability check, Docker-only model bootstrap, refresh cron, and teardown. Steps 3–9 are provider-agnostic. |
+| [`DEPLOY.md`](./DEPLOY.md) | One-time VPS provisioning for the paper run (DigitalOcean US, $6/mo): droplet + firewall, HTTPS clone, the three gitignored things a clone won't bring, the Kalshi-reachability check, Docker-only model bootstrap, refresh cron, and teardown. Steps 3–9 are provider-agnostic. |
 
 ## Recommended build setup
 
@@ -77,9 +78,9 @@ I trade the signal manually on Kalshi.
 
 Nothing left to build. The remaining work is operational, in this order:
 
-1. **Provision the always-on host** — [`DEPLOY.md`](./DEPLOY.md), which starts at DigitalOcean account
-   signup ($6/mo droplet) and ends at the weekly-refresh cron. Note that `config.yaml`, `secrets/`, and
-   `data/` are all gitignored, so a fresh clone does **not** bring them; the runbook handles each.
+1. ~~**Provision the always-on host**~~ — **DONE 2026-07-29.** See [`DEPLOY.md`](./DEPLOY.md) if it
+   ever needs rebuilding. Note that `config.yaml`, `secrets/`, and `data/` are all gitignored, so a
+   fresh clone does **not** bring them; the runbook handles each.
 2. **Run the forward CLV paper test** — accumulate 200+ Pinnacle-referenced paper bets across 12+ ISO
    weeks. See the **Phase-6 forward-CLV paper-test runbook** below for the protocol. Do **not** change
    `p_model` mid-run: any model change invalidates the accumulated sample. The liquidity gate is frozen

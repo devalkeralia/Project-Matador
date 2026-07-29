@@ -23,7 +23,14 @@ CREATE TABLE IF NOT EXISTS opportunities (
     flagged INTEGER DEFAULT 0,  -- adverse-selection: net edge >= adverse_gap (possible late news)
     experience INTEGER,         -- min prior-match count of the two players (thin-player flag + CLV segmentation)
     staleness INTEGER,          -- max days since either player last played (layoff CLV segmentation; instrumentation only)
-    score_state TEXT
+    score_state TEXT,
+    -- Sharp (Pinnacle, Shin-devigged) fair prob of the TAKEN side AT ENTRY, captured post-decision.
+    -- Pairs with outcomes.sharp_close to split a positive gate into skill vs venue basis:
+    --   sharp_close - sharp_entry  = the sharp line moving toward us AFTER we committed (skill)
+    --   sharp_entry - price        = a standing Kalshi-vs-Pinnacle basis (NOT skill)
+    -- Must be collected live: the-odds-api historical odds are not on the free tier.
+    sharp_entry REAL,
+    sharp_entry_source TEXT     -- 'pinnacle' | 'consensus' (which reference produced sharp_entry)
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -80,7 +87,7 @@ _MIGRATIONS = {
     "opportunities": {
         "event_ticker": "TEXT", "market_player": "TEXT", "occurrence_datetime": "TEXT",
         "flagged": "INTEGER DEFAULT 0", "experience": "INTEGER", "opponent": "TEXT",
-        "staleness": "INTEGER",
+        "staleness": "INTEGER", "sharp_entry": "REAL", "sharp_entry_source": "TEXT",
     },
     "outcomes": {
         "closing_captured_at": "TEXT", "closing_source": "TEXT",
@@ -167,6 +174,17 @@ def update_occurrence(conn: sqlite3.Connection, opp_id: int, occurrence_datetime
     insert. Called when the live Kalshi market shows the match was postponed, so the closing-line
     capture can re-arm against the corrected start (see bot.auto_capture)."""
     conn.execute("UPDATE opportunities SET occurrence_datetime = ? WHERE id = ?", (occurrence_datetime, opp_id))
+    conn.commit()
+
+
+def set_sharp_entry(conn: sqlite3.Connection, opp_id: int, prob: float, source: str) -> None:
+    """Record the sharp fair prob observed AT ENTRY -- the only writer of these columns after insert.
+
+    Written post-decision (see bot._sharp_entry_job), never as part of the alert path, and only when
+    a probability was actually resolved: leaving the column NULL is the honest encoding of 'no sharp
+    reference for this row', which the week-12 decomposition filters on."""
+    conn.execute("UPDATE opportunities SET sharp_entry = ?, sharp_entry_source = ? WHERE id = ?",
+                 (prob, source, opp_id))
     conn.commit()
 
 

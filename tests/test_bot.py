@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -23,6 +24,7 @@ from matador.bot import (
     schedule_pending_captures,
     scheduled_scan_job,
     _scheduled_scan_job,
+    _sharp_entry_job,
     split_message,
 )
 from matador.config import Config
@@ -848,7 +850,7 @@ def test_build_application_registers_scheduled_scan_only_when_configured():
 
 def test_scheduled_scan_job_dms_on_new_alert_and_arms_captures(tmp_path, monkeypatch):
     app = _app_for_job(tmp_path, scan_interval_hours=8.0)
-    monkeypatch.setattr("matador.bot._scheduled_scan_job", lambda *a: ("🎾 VALUE ALERT — ATP · Wimbledon\nopp #1", 1))
+    monkeypatch.setattr("matador.bot._scheduled_scan_job", lambda *a: ("🎾 VALUE ALERT — ATP · Wimbledon\nopp #1", [1]))
     ctx = _FakeJobContext(app)
     asyncio.run(scheduled_scan_job(ctx))
     assert len(ctx.bot.sent) == 1 and ctx.bot.sent[0][0] == 42 and "VALUE ALERT" in ctx.bot.sent[0][1]
@@ -857,7 +859,7 @@ def test_scheduled_scan_job_dms_on_new_alert_and_arms_captures(tmp_path, monkeyp
 def test_scheduled_scan_job_quiet_when_no_new_alert_unless_announce(tmp_path, monkeypatch):
     # A standing edge that /scan re-renders but does NOT re-log (n_new=0) must not re-ping.
     monkeypatch.setattr("matador.bot._scheduled_scan_job",
-                        lambda *a: ("🎾 VALUE ALERT — standing edge (already logged)", 0))
+                        lambda *a: ("🎾 VALUE ALERT — standing edge (already logged)", []))
     quiet = _FakeJobContext(_app_for_job(tmp_path))                      # scan_announce defaults False
     asyncio.run(scheduled_scan_job(quiet))
     assert quiet.bot.sent == []                                         # nothing NEW -> no DM (even though text has an alert block)
@@ -885,10 +887,111 @@ def test_scheduled_scan_new_count_dedups_standing_edge_across_cycles(tmp_path, m
     monkeypatch.setattr("matador.bot._client", lambda cfg, demo: make_client())
     cfg = make_cfg(db_path=dbp)
     model = OrientedModel("Player Aaa", "Player Bbb", 0.60)
-    text1, n1 = _scheduled_scan_job(cfg, model, False, ["atp"])
-    _text2, n2 = _scheduled_scan_job(cfg, model, False, ["atp"])
-    assert n1 == 1 and "VALUE ALERT" in text1   # first sweep logs a new opp
-    assert n2 == 0                              # second sweep: standing edge deduped -> nothing new
+    text1, new1 = _scheduled_scan_job(cfg, model, False, ["atp"])
+    _text2, new2 = _scheduled_scan_job(cfg, model, False, ["atp"])
+    assert new1 == [1] and "VALUE ALERT" in text1   # first sweep logs a new opp, and names its id
+    assert new2 == []                              # second sweep: standing edge deduped -> nothing new
+
+
+# ---- sharp fair probability AT ENTRY (the venue-basis vs line-drift decomposition) ----
+
+def _entry_cfg(tmp_path, **over):
+    """A cfg whose db exists and whose odds_api_key_path points at a real (non-empty) key file --
+    _sharp_client returns None on a missing/empty key, which would short-circuit the fill."""
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+    key = tmp_path / "odds.txt"
+    key.write_text("K")
+    return make_cfg(db_path=dbp, odds_api_key_path=str(key), **over), conn
+
+
+def test_sharp_entry_job_fills_the_entry_columns(tmp_path, monkeypatch):
+    cfg, conn = _entry_cfg(tmp_path)
+    oid = _capture_opp_sharp(conn)
+    conn.close()
+    monkeypatch.setattr("matador.bot._sharp_client", lambda c: make_sharp_client())
+    assert _sharp_entry_job(cfg, [oid]) == 1
+    conn = connect(cfg.db_path)
+    row = conn.execute("SELECT sharp_entry, sharp_entry_source FROM opportunities WHERE id=?", (oid,)).fetchone()
+    # 1.5 / 2.6 devigged -> the Yes side (Player Aaa) is the favorite, so entry prob is well above half.
+    assert row["sharp_entry"] is not None and 0.5 < row["sharp_entry"] < 1.0
+    assert row["sharp_entry_source"] == "pinnacle"
+    conn.close()
+
+
+def test_sharp_entry_job_is_a_noop_without_a_sharp_client(tmp_path, monkeypatch):
+    """No key configured -> the columns stay NULL. NULL is the honest 'no reference' encoding; the
+    week-12 decomposition filters on it rather than being handed a fabricated number."""
+    cfg, conn = _entry_cfg(tmp_path)
+    oid = _capture_opp_sharp(conn)
+    conn.close()
+    monkeypatch.setattr("matador.bot._sharp_client", lambda c: None)
+    assert _sharp_entry_job(cfg, [oid]) == 0
+    conn = connect(cfg.db_path)
+    assert conn.execute("SELECT sharp_entry FROM opportunities WHERE id=?", (oid,)).fetchone()["sharp_entry"] is None
+    conn.close()
+
+
+def test_sharp_entry_job_never_raises_and_returns_zero(tmp_path, monkeypatch):
+    cfg, conn = _entry_cfg(tmp_path)
+    oid = _capture_opp_sharp(conn)
+    conn.close()
+
+    def boom(c):
+        raise RuntimeError("odds api exploded")
+    monkeypatch.setattr("matador.bot._sharp_client", boom)
+    assert _sharp_entry_job(cfg, [oid]) == 0          # swallowed: instrumentation can't take down a cycle
+    assert _sharp_entry_job(cfg, []) == 0             # nothing logged this cycle -> no client built at all
+
+
+def test_scheduled_scan_dms_before_and_despite_the_sharp_entry_fill(tmp_path, monkeypatch):
+    """The alert must reach the owner even if the entry fill fails, and must not WAIT on it.
+
+    This is the ordering guarantee that makes the fill safe to run on the live box: it is
+    instrumentation, so it sits strictly after the DM and its failure is invisible to the alert path.
+    """
+    app = _app_for_job(tmp_path, scan_interval_hours=8.0)
+    monkeypatch.setattr("matador.bot._scheduled_scan_job", lambda *a: ("🎾 VALUE ALERT — ATP\nopp #1", [1]))
+    order = []
+    ctx = _FakeJobContext(app)
+
+    async def spy_send(chat_id, text):
+        order.append("dm")
+        ctx.bot.sent.append((chat_id, text))
+    monkeypatch.setattr(ctx.bot, "send_message", spy_send)
+
+    def failing_fill(cfg, ids):
+        order.append("fill")
+        raise RuntimeError("odds api down")
+    monkeypatch.setattr("matador.bot._sharp_entry_job", failing_fill)
+
+    with pytest.raises(RuntimeError):   # the job itself doesn't swallow -- _sharp_entry_job does
+        asyncio.run(scheduled_scan_job(ctx))
+    assert order == ["dm", "fill"]      # DM first, always
+    assert len(ctx.bot.sent) == 1 and "VALUE ALERT" in ctx.bot.sent[0][1]
+
+
+def test_migration_adds_the_sharp_entry_columns_to_an_existing_db(tmp_path):
+    """A DB created before these columns existed must gain them -- the live droplet's matador.db has
+    11 rows, so a re-CREATE is not an option and _MIGRATIONS is the only path."""
+    dbp = str(tmp_path / "old.db")
+    conn = sqlite3.connect(dbp)
+    conn.executescript(  # the pre-sharp_entry shape: same table, minus the two new columns
+        "CREATE TABLE opportunities (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, "
+        "tour TEXT NOT NULL, market_ticker TEXT NOT NULL, side TEXT NOT NULL CHECK (side IN ('yes','no')), "
+        "price REAL NOT NULL, p_model REAL NOT NULL, net_edge REAL NOT NULL);"
+    )
+    conn.execute("INSERT INTO opportunities (ts,tour,market_ticker,side,price,p_model,net_edge) "
+                 "VALUES ('t','ATP','M','yes',0.5,0.6,0.08)")
+    conn.commit()
+    conn.close()
+    live = connect(dbp)
+    init_db(live)                                        # must ALTER, not fail, and must not drop the row
+    cols = {r[1] for r in live.execute("PRAGMA table_info(opportunities)")}
+    assert {"sharp_entry", "sharp_entry_source"} <= cols
+    assert live.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0] == 1
+    live.close()
 
 
 # ---- split_message ----

@@ -469,17 +469,60 @@ def _scan_job(cfg, model, demo, tours) -> str:
         return _with_conn(cfg, lambda conn: run_scan(client, model, cfg, conn, tours))
 
 
-def _scheduled_scan_job(cfg, model, demo, tours) -> tuple[str, int]:
-    """Worker for the scheduled scan: run the sweep and report how many opportunities were NEWLY
-    logged this cycle -- so the async job DMs only on genuinely new alerts, not a standing edge
-    that /scan re-renders (but dedups and does not re-log) on every cycle."""
+def _scheduled_scan_job(cfg, model, demo, tours) -> tuple[str, list[int]]:
+    """Worker for the scheduled scan: run the sweep and return the ids of the opportunities NEWLY
+    logged this cycle -- so the async job DMs only on genuinely new alerts, not a standing edge that
+    /scan re-renders (but dedups and does not re-log) on every cycle, and so the sharp-at-entry fill
+    knows exactly which rows to annotate. Ids (not a count) because MAX(id) is stable under the
+    dedup: a cycle that logs nothing returns [], which reads the same as the old 0."""
     with _client(cfg, demo) as client:
         def work(conn):
-            before = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
+            high_water = conn.execute("SELECT COALESCE(MAX(id), 0) FROM opportunities").fetchone()[0]
             text = run_scan(client, model, cfg, conn, tours)
-            after = conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0]
-            return text, after - before
+            new_ids = [r[0] for r in conn.execute("SELECT id FROM opportunities WHERE id > ?", (high_water,))]
+            return text, new_ids
         return _with_conn(cfg, work)
+
+
+def _sharp_entry_job(cfg, opp_ids: list[int]) -> int:
+    """Record the sharp fair prob AT ENTRY for the rows a scan cycle just logged. Returns how many
+    were filled.
+
+    Runs strictly POST-decision -- after the alerts are logged and the DM is sent -- because it is
+    instrumentation, not input: it must never delay an alert, and must never be able to suppress one.
+    Hence it opens its own client/connection instead of joining the sweep, and swallows everything
+    (`sharp_fair_for_opp` is already non-raising; the belt-and-braces try covers the client build and
+    the writes). One cached fetch per tournament per alert-bearing cycle keeps the odds-api credits
+    reserved for the BINDING close captures.
+
+    Why at all: without an entry snapshot, a MET gate cannot be told apart from Kalshi simply trading
+    a few cents under Pinnacle on the favorites min_price forces us to buy -- a standing venue basis
+    that looks identical to forecasting skill. See storage.set_sharp_entry.
+    """
+    if not opp_ids:
+        return 0
+    try:
+        client = _sharp_client(cfg)
+        if client is None:
+            return 0
+        cache: dict = {}
+        filled = 0
+        with client:
+            def work(conn):
+                nonlocal filled
+                for opp_id in opp_ids:
+                    row = get_opportunity(conn, opp_id)
+                    if row is None:
+                        continue
+                    prob, source = sharp_fair_for_opp(client, row, cache=cache)
+                    if prob is not None:
+                        storage.set_sharp_entry(conn, opp_id, prob, source)
+                        filled += 1
+            _with_conn(cfg, work)
+        return filled
+    except Exception:
+        log.warning("sharp-at-entry fill failed for %s", opp_ids, exc_info=True)
+        return 0
 
 
 def _recent_job(cfg, n) -> str:
@@ -713,15 +756,20 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     bd = context.bot_data
     cfg = bd["cfg"]
     try:
-        text, n_new = await asyncio.to_thread(_scheduled_scan_job, cfg, bd["model"], bd["demo"], cfg.tours)
+        text, new_ids = await asyncio.to_thread(_scheduled_scan_job, cfg, bd["model"], bd["demo"], cfg.tours)
     except Exception:
         log.exception("scheduled scan failed")
         return
+    n_new = len(new_ids)
     schedule_pending_captures(context.application)  # arm auto-capture for any freshly-logged opps
     log.info("scheduled scan complete: %d new alert(s)", n_new)
     if n_new > 0 or cfg.scan_announce:
         for chunk in split_message(text):
             await context.bot.send_message(chat_id=bd["chat_id"], text=chunk)
+    # AFTER the DM: instrumentation must not sit between an edge and the owner seeing it.
+    if new_ids:
+        filled = await asyncio.to_thread(_sharp_entry_job, cfg, new_ids)
+        log.info("sharp-at-entry: filled %d/%d new opp(s)", filled, n_new)
 
 
 # ---- daily heartbeat (liveness: a silent outage otherwise looks like 'no edge found') ----

@@ -238,6 +238,59 @@ markets where the gate thresholds are meaningful.
 
 ## Changelog
 
+- **2026-07-30 — `/result` is now fully automatic; a 4-agent review of it found 8 defects; 353 tests.**
+  Outcomes record themselves from Kalshi's own settlement, so the ROI co-gate no longer depends on the
+  owner typing `/result` 200+ times across 12 weeks — the largest recurring cost the paper run imposed,
+  and one the owner said plainly they would forget. Forgetting is not a discipline problem to nag away:
+  a few missed weeks makes the week-12 read impossible, or biased toward whichever results felt worth
+  entering. `/result` survives purely as an override and is never overwritten.
+  - **Kalshi settles tennis THREE ways, not two** (measured over 2,000 finalized markets;
+    `scripts/probe_settlement.py`): `yes`, `no`, and **`scalar`** (3.6% ATP / 2.2% WTA), where the
+    mirrored pair *splits* the dollar across 0.15–0.85, each pair summing to exactly $1.00. Also
+    `status` reports **`finalized`**, not `settled`. The naive "not `yes` → loss" mapping would have
+    booked **−100% on a refund**.
+  - **What `scalar` MEANS was investigated after a first, wrong answer.** It was written up as Kalshi's
+    "retirement path" on inference. Measuring refuted that: of 17 scalar matches inside our archive's
+    coverage, 16 are absent entirely (including marquee main-draw pairings) and the one present scored
+    `W/O`; the same window holds only 3 retirements/walkovers against 8 scalars. The mechanism is in
+    Kalshi's rules, which need a winner *"after a ball has been played"* — so a match that never starts
+    is refunded at the prevailing price. `scalar` = **never played**, auto-recorded as `void` (this
+    schema's existing walkover/refund meaning). A mid-match **retirement is not this** and settles
+    `yes`/`no` normally. See DESIGN-DECISIONS **"Auto-recorded settlement"**.
+  - **An adversarial 4-agent review of the first cut found 8 defects**, all fixed and mutation-verified:
+    the escalation DM printed Kalshi's raw `settlement_value` — the **YES** contract's — so it was
+    inverted for every `no` bet (75¢ shown on a bet that returned 25¢); it instructed a command that
+    does not parse (`win`/`loss` require a fill price); the sweep had **no liveness surface**, so it
+    could fail every cycle for weeks while the heartbeat still read "Matador OK" and `roi` stayed
+    `None`; one failed Telegram send aborted the rest of the loop and could permanently silence a case;
+    a `/result` typed during the sweep's Kalshi round trip could be silently overwritten (absence is now
+    checked **in** the write); a zero-size row would have been recorded as a real outcome; and untimed
+    rows were excluded from both the sweep and the overdue nag. **Two reviewer claims were refuted**
+    rather than acted on (outright markets *do* carry `occurrence_datetime`; the live DB has no
+    duplicates).
+  - The worst finding was coverage: **disabling the entire sweep passed 345/345.** The autonomous path —
+    the whole point — had no test. It now has an end-to-end one, and the first live sweep recorded 10
+    outcomes on the real sample (5W/5L, correct fees), with the second sweep correctly recording 0.
+
+- **2026-07-29/30 — Improvements batch: 9 of 11 do-now items applied; 336 tests.** Worked the backlog
+  produced by the improvements pass, in deadline order.
+  - **The go-live gate was untested at every boundary.** Verified by runtime mutation: deleting the
+    200-bet floor, weakening the effect bar to `>0`, deleting the 12-week floor, letting `roi=None`
+    pass, gating on the **circular Kalshi count**, and widening `CAPTURE_LATE_GRACE` to 12h **all**
+    passed the suite — because every gate test had the two CLV tracks perfectly aliased with all values
+    far from the bar. Fixed with a base case that genuinely passes while the tracks **diverge** (210
+    pinnacle vs 240 Kalshi), a pinned BCa golden interval (a garbage `_NORM` stub used to pass), and
+    timing constants pinned **absolutely** rather than relative to themselves.
+  - **Sharp probability at ENTRY is now logged** — the one irrecoverable item. Without it a MET gate
+    cannot be told apart from Kalshi simply trading a few cents under Pinnacle on the favorites
+    `min_price` forces us to buy. Filled strictly post-DM so it can never delay or suppress an alert.
+  - **The week-12 read protocol is pre-registered** (written at n=11 bets, deliberately before the
+    sample matured), the **heartbeat answers the four questions that needed SSH** and its header
+    degrades to `🚨 N PROBLEM(S)`, `matador.db` **offsites weekly** via SQLite's online-backup API (a
+    plain file read carries *no rows* in WAL mode — the proposed raw upload would have shipped empty
+    backups), a **dead-man's switch** ships opt-in, and three read-under-stress doc traps are fixed
+    (DO backups confirmed weekly/4-week, so the real RPO is 7 days).
+
 - **2026-07-29 — Adversarial review round: the dedup fix was INCOMPLETE + 3 silent-failure holes closed; 297 tests.**
   A Fable-5 multi-agent review (5 lenses, each adversarially verified; 21 findings confirmed) of the diff
   since the last full review returned **fix-before-continuing** — but *not* restart-the-sample, since

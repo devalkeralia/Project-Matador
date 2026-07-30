@@ -1,19 +1,44 @@
-# SESSION HANDOFF — 2026-07-28/29
+# SESSION HANDOFF — 2026-07-28 → 2026-07-30
 
-Written so this session's context can be cleared without losing anything. Durable homes for each
-topic are noted; this file is the index, not the record.
+Written so context can be cleared without losing anything. Durable homes for each topic are noted;
+this file is the index, not the record.
 
-## TL;DR state
+## TL;DR state (as of 2026-07-30 21:15 UTC)
 
 | | |
 |---|---|
 | **Bot** | **DEPLOYED AND RUNNING** — DigitalOcean droplet `157.230.158.73` (SFO2, $6/mo) |
-| **Repo** | `origin/main`, 352 tests passing |
-| **Sample** | accumulating; 15 rows / 15 distinct positions / 0 duplicates (2026-07-30) |
-| **Next real event** | **Monday 06:00 UTC** — refresh cron fires and DMs its outcome |
+| **Repo + droplet** | both at `e131417` on `origin/main`, **353 tests passing**, tree clean |
+| **Sample** | 15 opportunities / 15 distinct positions / 0 duplicates; **10 now have results** |
+| **Owner workload** | **none** — outcomes auto-record from Kalshi; `/result` is an override only |
 | **Model** | `p_model` FROZEN for the paper run. No demonstrated edge (`w*` = 0.00 vs the sharp close) |
+| **Next real event** | **Monday 06:00 UTC** — refresh cron fires, DMs its outcome, and now attaches `matador.db` |
 
-## What happened this session
+**Nothing is left to build.** The run is accumulating; read the gate ONCE at ≥200 sharp-referenced bets
+across ≥12 ISO weeks, per the pre-registered protocol in DESIGN-DECISIONS.
+
+## The 2026-07-30 session (most recent)
+
+1. **Improvements batch — 9 of 11 do-now items applied**, in deadline order (`IMPROVEMENTS.md` marks
+   each with what was actually built). Headlines: **sharp probability at ENTRY** now logged (the only
+   irrecoverable item — without it a MET gate can't be separated from a Kalshi-vs-Pinnacle venue
+   basis); **the go-live gate's boundaries are finally tested** (6 mutations, incl. gating on the
+   *circular* Kalshi count, previously all passed); the **week-12 read protocol is pre-registered** at
+   n=11 bets; the **heartbeat answers the four SSH-only questions** and its header degrades to
+   `🚨 N PROBLEM(S)`; `matador.db` **offsites weekly**; a **dead-man's switch** ships opt-in.
+2. **`/result` is now fully automatic** (backlog #10, deferral overturned when the owner said they would
+   forget it). Outcomes record from Kalshi's settlement; the first live sweep wrote 10 outcomes
+   correctly, the second correctly wrote 0.
+3. **Kalshi settles tennis THREE ways** — `yes`, `no`, and `scalar` (a pair-splitting refund). Measured,
+   not assumed: `scripts/probe_settlement.py` + a captured fixture. `scalar` = **the match was never
+   played**, which corrected an earlier wrong write-up calling it a retirement path.
+4. **A 4-agent adversarial review of the auto-recorder found 8 defects**, all fixed and
+   mutation-verified — including a DM inverted for every `no` bet and a sweep with no liveness surface.
+   Two reviewer claims were **refuted** rather than acted on.
+5. **Doc traps fixed** — DO backups confirmed **weekly / 4-week** (so the real RPO is 7 days, not 1),
+   the stale deploy-key teardown step removed, and the two-poller **409 wedge** warning added.
+
+## The 2026-07-28/29 session
 
 1. **Deployed to DigitalOcean.** Hetzner was abandoned mid-setup after their US prices turned out to
    be ~$20.49/mo vs DO's $6. Full runbook: `DEPLOY.md` (signup → teardown). Kalshi verified reachable
@@ -47,11 +72,21 @@ topic are noted; this file is the index, not the record.
 | Deploy / rebuild the host | `DEPLOY.md` |
 | Every settled decision + rationale | `DESIGN-DECISIONS.md` |
 | Status, changelog, command policy | `README.md` |
-| Improvement backlog (11 do-now / 4 after-gate / 7 rejected) | `IMPROVEMENTS.md` |
+| Improvement backlog (9 of 11 do-now APPLIED / 4 after-gate / 7 rejected) | `IMPROVEMENTS.md` |
 | In-play research tool + its pre-registration | `scripts/inplay_overreaction.py` |
-| Cross-session facts | `~/.claude/projects/.../memory/` (`build-status`, `go-live-prerequisites`, `underdog-over-rating`, `layoff-decay-preregistered`, `verify-your-own-work`) |
+| **How Kalshi settles (re-runnable)** | `scripts/probe_settlement.py` + `tests/fixtures/market_finalized_sample.json` |
+| **Kalshi API reference incl. settlement fields** | `RESEARCH-KALSHI.md` §1 |
+| Cross-session facts | `~/.claude/projects/.../memory/` (`build-status`, `go-live-prerequisites`, `underdog-over-rating`, `layoff-decay-preregistered`, `verify-your-own-work`, `unattended-needs-a-liveness-surface`, `automate-dont-nag`) |
 
 ## OPEN — pick up here
+
+**Nothing is blocked and nothing is half-finished.** Everything below is either DONE (kept for the
+record) or a deliberate deferral. The two things needing the OWNER, not a session:
+
+| Action | Why it matters |
+|---|---|
+| **Arm the dead-man's switch** — create a healthchecks.io check (~26h grace), add `HEALTHCHECK_URL` to the droplet's `secrets/.env`, restart | It ships INERT. It is the only mechanism that detects the two-poller **409 wedge**, where running `scripts/bot.py` locally on the prod token silently kills the droplet's poller while the container still looks healthy |
+| **Watch Monday 06:00 UTC** | First live test of the weekly `matador.db` offsite — expect a `.db` attached to the refresh DM alongside the outcome text |
 
 ### 1. ~~A live defect, currently untriggered~~ — **FIXED + DEPLOYED 2026-07-29**
 The cross-anchor `prior["id"]` `TypeError` in `run_check`/`run_scan`. Both sites now go through
@@ -62,12 +97,13 @@ pairs of `{scan, check(A,B), check(B,A)}` (306 tests). It never fired live — r
 Pushed and deployed (`69cf933`), verified live: no `TypeError`, migration applied, sample intact.
 `/check` is no longer defect-armed but stays in "Avoid" below for the separate owner-timing reason.
 
-### 2. The improvements backlog — **6 of 11 do-now items APPLIED 2026-07-29**
+### 2. The improvements backlog — **9 of 11 do-now items APPLIED (2026-07-29/30)**
 `IMPROVEMENTS.md` (each done item struck through with what was actually built). Applied: #1 prior-id,
 **#8 sharp-at-entry** (the irrecoverable one — now collecting), **#7 the gate mutations**, #3 the
-pre-registered read protocol, #4 offsiting `matador.db`, #2 the self-sufficient heartbeat.
+pre-registered read protocol, #4 offsiting `matador.db`, #2 the self-sufficient heartbeat, #6 the doc
+traps, **#10 auto-recorded settlement**, #11 the dead-man's switch.
 
-Still open, in the order I'd take them:
+**Only #5 and #9 remain, both by choice:**
 - **#5** refresh shrink-guard + degradation warnings + a build stamp in `model.json` — safe (warn-only
   and metadata; verified `Model.from_artifact` ignores unknown top-level keys, so a stamp can't change
   a prediction).

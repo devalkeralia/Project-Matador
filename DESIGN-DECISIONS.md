@@ -527,6 +527,67 @@ rule, never a per-event ticker (`KXATP-26WIM` etc.), so it generalises to every 
 tournament final. Confirmed live against **both** Wimbledon 2026 finals — `KXATP` (Sinner–Zverev)
 and `KXWTA` (Muchova–Noskova); `/find` surfaced them as the only model-priceable open matches.
 
+## Auto-recorded settlement, and Kalshi's `scalar` third result (2026-07-30)
+
+**Outcomes are now recorded automatically from Kalshi's own settlement.** `/result` remains the owner's
+override and is never overwritten.
+
+Why, despite this being the only unattended writer to the live sample: the gate hard-requires
+`roi >= 0`, and `roi` stays `None` until a result exists — so a readable gate depended on the owner
+typing `/result` 200+ times across 12 weeks. The owner said plainly they would forget. That is not a
+discipline problem to be nagged away: a few missed weeks makes the read either impossible or biased
+toward whichever results felt worth entering, which is worse than a slightly cruder metric.
+
+**Kalshi settles tennis THREE ways — verified live against 2,000 finalized markets (2026-07-30):**
+
+| `result` | `settlement_value` | ATP / WTA | meaning |
+|---|---|---|---|
+| `yes` | 1.00 | 48.2% / 48.9% | the market's Yes player won |
+| `no` | 0.00 | 48.2% / 48.9% | the Yes player lost |
+| **`scalar`** | **anywhere in 0.15–0.85** | **3.6% / 2.2%** | **partial settlement — the mirrored pair SPLITS the dollar, summing to exactly $1.00** |
+
+Reproduce with `scripts/probe_settlement.py`; captured shapes in
+`tests/fixtures/market_finalized_sample.json`. Two traps worth naming: the naive "anything that isn't
+`yes` is a loss" mapping would book **−100% on a bet that was actually refunded**, and
+`settlement_value` is always the **YES** contract's value — a `no` holder received
+`1 − settlement_value`, so anything shown to the owner must be inverted (a review caught exactly that
+bug in the first cut of the ⚖️ DM). Note also that the `status` **query filter** is `settled` while a
+settled market **reports** `finalized`.
+
+**What `scalar` MEANS — established 2026-07-30, and NOT what the first cut of this section claimed.**
+It was originally written up as Kalshi's "retirement/anomaly path". That was an unverified inference and
+it is wrong. The evidence: of the 17 scalar matches falling inside our results archive's coverage, **16
+do not appear in the archive at all** — including marquee main-draw pairings (Fritz/Draper,
+Raducanu/Ruzic) that would certainly be recorded had they been played — and the one that does appear
+scored **`W/O`**. Independently, in the same window the archive contains only **3** retirements or
+walkovers across both tours while Kalshi produced **8** scalars, so retirements cannot be the cause.
+The mechanism is in Kalshi's own market rules, which require a winner *"after a ball has been
+played"*: if no ball is played the condition is unsatisfiable, so Kalshi pays neither side and
+**refunds both at roughly the prevailing price** — which is exactly why the pair is a *price* pair
+summing to $1.00 rather than a payout. **`scalar` = the match was never played** (withdrawal /
+walkover / cancellation). A mid-match **retirement is not a scalar**: someone advances, so it settles
+`yes`/`no` and auto-records normally.
+
+**Therefore a `scalar` is auto-recorded as `void`.** That is precisely this schema's existing meaning
+for the case ("walkover/refund — excluded from CLV, hit-rate, P&L"), so the convention needed no
+invention. It also supersedes this section's first-cut reasoning, which kept the row at `result` NULL to
+preserve its CLV observation: that argument only holds for a match that *happened*. A match that never
+took place has no closing line anyone could have beaten, so counting it would put a phantom event in the
+**binding** metric — exclusion is not a P&L tidy-up, it is the correct treatment. The owner is DM'd and
+can override; the only thing still escalated to a human is a settlement value we have never seen, since
+guessing at unknown semantics is the exact mistake this investigation corrected.
+
+**AMENDMENT to the pre-registered read protocol (recorded BEFORE the read, as that protocol requires):
+the ROI co-gate is now a PAPER ROI at alert prices.** `clv.summarize` is untouched; what changed is how
+`result`/`fill_price` are populated — Kalshi's settled side, at the logged alert price and logged
+contract count, which is exactly what a log-only paper bet transacted at. Consequences, stated plainly:
+- It is no longer a "realized" ROI in the literal sense. Nobody filled anything.
+- It is *more* uniform than the alternative: no subjective fill prices, nothing gameable, and no
+  selective-entry bias.
+- The series is clean from the start — at the moment of this change the DB held **15 opportunities and
+  ZERO recorded results or fills**, so there is no mixed methodology to reconcile.
+- Every auto-record is DM'd so a wrong one is correctable immediately rather than at week 12.
+
 ## Week-12 read protocol — PRE-REGISTERED 2026-07-29, before the sample matured
 
 Written **deliberately in advance**, while the sample stood at 11 bets, because every rule below is
@@ -559,6 +620,12 @@ pre-registered in "Layoff / inactivity". Finding a positive slice inside a faile
 
 **`clv_report` robustness numbers are veto-only.** Single-week concentration and the drop-the-largest-
 week lower bound can **block** a go-live; they can never authorize one.
+
+**Deviations recorded so far** (this protocol requires each to be written down before the read):
+- **2026-07-30 — the ROI co-gate is a PAPER ROI at alert prices**, because outcomes are now
+  auto-recorded from Kalshi's settlement rather than owner-typed. Rationale and the full consequence
+  list are in "Auto-recorded settlement" above. It makes the co-gate readable at all, which the manual
+  path could not be relied on to do.
 
 **Caveats the reader must carry into the read.** Closes are captured at T−5min of *scheduled* start,
 so a late-starting match understates late drift; and the missed-capture set is **non-random** (thin

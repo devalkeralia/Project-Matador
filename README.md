@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7) and twice review-hardened — 297 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7), review-hardened, and DEPLOYED — 352 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -41,7 +41,7 @@ remains is only the paper run itself:** accumulate 200+ sharp-referenced paper b
 and read the gate. Model still has **no demonstrated edge** — do not bet real money until the gate is MET.
 **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-29_
+_Last updated: 2026-07-30_
 
 ## What this is
 
@@ -170,6 +170,21 @@ co-gate), pending rows with **no start time** (they never auto-capture — run `
 **odds-api credits** running low (exhaustion silently NULLs `sharp_close`). If anything is wrong the
 header itself changes to `🚨 Matador — N PROBLEM(S) below`, because the first line is all that gets
 read on a busy day.
+
+**Outcomes record themselves.** A job on the scan cadence reads Kalshi's own settlement for any bet
+whose match has finished and DMs a `🧾` confirmation — so the ROI co-gate stays readable without 200+
+manual `/result` entries, which is the largest recurring cost the paper run would otherwise impose.
+`/result` becomes an override and is never overwritten.
+
+Matches that were never **played** are handled too. Kalshi settles ~2–4% of tennis markets as
+**`scalar`**, splitting the mirrored pair (values across 0.15–0.85, summing to $1.00) rather than paying
+one side out — because its rules need a winner *"after a ball has been played"*, so a withdrawal or
+walkover is refunded at the prevailing price. Those auto-record as **`void`** (excluded from CLV,
+hit-rate and P&L, per this schema's existing walkover convention). Note a mid-match **retirement is not
+this** — someone advances, so it settles `yes`/`no` normally. Only a settlement never seen before asks
+you anything. Measured by `scripts/probe_settlement.py`. See DESIGN-DECISIONS
+"Auto-recorded settlement" — it also records the amendment that the ROI co-gate is now a **paper ROI at
+alert prices**.
 
 **Dead-man's switch (optional, recommended).** Set `HEALTHCHECK_URL` in `secrets/.env` to a
 [healthchecks.io](https://healthchecks.io) check URL and the bot pings it **after** each heartbeat DM

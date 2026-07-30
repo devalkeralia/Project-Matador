@@ -29,8 +29,24 @@ Key read endpoints:
   `status` (`unopened|open|paused|closed|settled`), `tickers` (comma-sep); `limit` (max 1000)
   + `cursor`. Per-market fields include `ticker`, `event_ticker`, `yes_bid_dollars`,
   `yes_ask_dollars`, `no_bid_dollars`, `last_price_dollars`, `volume_fp`, `volume_24h_fp`,
-  `open_interest_fp`, `liquidity_dollars`, `status`, `yes_sub_title`, `no_sub_title`.
+  `open_interest_fp`, `liquidity_dollars`, `status`, `yes_sub_title`, `no_sub_title`,
+  plus the **settlement** fields `result`, `settlement_value_dollars`, `settlement_ts`.
   **There is no free-text/name search** — filter by ticker/metadata only.
+- **Settlement (measured 2026-07-30, 2,000 settled tennis markets — `scripts/probe_settlement.py`):**
+  the `status` **query filter** is `settled`, but a settled market **reports `status: "finalized"`** —
+  the two are not the same string, so code matching on the returned value must accept `finalized`.
+  `result` is `yes` | `no` | **`scalar`**, where `scalar` is a **partial settlement**: the two mirrored
+  markets split the dollar (values across **0.15–0.85**, each pair summing to exactly $1.00) — 3.6% of
+  ATP and 2.2% of WTA settled markets. **Cause established 2026-07-30:** the match was never PLAYED.
+  The rules require a winner *"after a ball has been played"*, so a withdrawal/walkover/cancellation
+  cannot resolve either side and Kalshi refunds both at roughly the prevailing price (hence a price
+  pair summing to $1.00, not a payout). Checked against our own results archive: of 17 scalar matches
+  inside its coverage, 16 are absent entirely — including marquee main-draw pairings — and the one
+  present scored `W/O`. A mid-match RETIREMENT is NOT a scalar: someone advances, so it settles yes/no.
+  `settlement_value_dollars` is always the **YES** contract's value, so a No holder received
+  `1 − settlement_value`. An ACTIVE
+  market sends `result: ""` (empty string, not a missing key). Captured shapes:
+  `tests/fixtures/market_finalized_sample.json`.
 - `GET /markets/{ticker}` — single market.
 - `GET /markets/{ticker}/orderbook?depth=` — **returns bids only for each side**. In a binary
   market a *Yes ask* at X ⇔ a *No bid* at (1−X), so **reconstruct the Yes ask side from the No

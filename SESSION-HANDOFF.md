@@ -8,8 +8,8 @@ topic are noted; this file is the index, not the record.
 | | |
 |---|---|
 | **Bot** | **DEPLOYED AND RUNNING** — DigitalOcean droplet `157.230.158.73` (SFO2, $6/mo) |
-| **Repo** | `origin/main`, 297 tests passing |
-| **Sample** | accumulating; was 8 rows / 8 distinct positions / 0 duplicates at last check |
+| **Repo** | `origin/main`, 352 tests passing |
+| **Sample** | accumulating; 15 rows / 15 distinct positions / 0 duplicates (2026-07-30) |
 | **Next real event** | **Monday 06:00 UTC** — refresh cron fires and DMs its outcome |
 | **Model** | `p_model` FROZEN for the paper run. No demonstrated edge (`w*` = 0.00 vs the sharp close) |
 
@@ -53,16 +53,14 @@ topic are noted; this file is the index, not the record.
 
 ## OPEN — pick up here
 
-### 1. ~~A live defect, currently untriggered~~ — **FIXED 2026-07-29, awaiting deploy**
+### 1. ~~A live defect, currently untriggered~~ — **FIXED + DEPLOYED 2026-07-29**
 The cross-anchor `prior["id"]` `TypeError` in `run_check`/`run_scan`. Both sites now go through
 `bot._prior_position_id`, which mirrors `log_opportunity`'s key; parametrized test over all 9 ordered
 pairs of `{scan, check(A,B), check(B,A)}` (306 tests). It never fired live — re-verified: no
 `TypeError` in 72h of droplet logs, and all 11 rows carry the scan anchor.
 
-**Still to do: push + redeploy.** The droplet is at `5a10f21` and pulls from `origin/main`, so the fix
-is not live until `git pull && docker compose build && docker compose up -d` on the box. The
-`/check` mitigation can then drop its defect rider — but `/check` stays in "Avoid" below for the
-separate owner-timing reason.
+Pushed and deployed (`69cf933`), verified live: no `TypeError`, migration applied, sample intact.
+`/check` is no longer defect-armed but stays in "Avoid" below for the separate owner-timing reason.
 
 ### 2. The improvements backlog — **6 of 11 do-now items APPLIED 2026-07-29**
 `IMPROVEMENTS.md` (each done item struck through with what was actually built). Applied: #1 prior-id,
@@ -78,9 +76,22 @@ Still open, in the order I'd take them:
   7-day RPO is now stated). Stale deploy-key teardown step removed. The two-poller 409 warning added to
   DEPLOY §8 + the README policy.
 - **#9** the three week-12 analyses in `clv_report` — deferred on purpose, equally cheap at the read.
-- **#10** auto-record settlement — the biggest ops saver but the only unattended writer to the live
-  sample; needs Kalshi retirement/walkover behaviour verified live first.
-- **#11** dead-man's switch — still undecided; adds a fifth external dependency.
+- ~~**#10** auto-record settlement~~ — **DONE 2026-07-30**, deferral overturned when the owner said they
+  would forget `/result` (which makes the gate unreadable or selectively biased — worse than a cruder
+  metric). The pre-req immediately earned its keep: Kalshi settles tennis **three** ways, and
+  `result='scalar'` (3.6% ATP / 2.2% WTA) splits the pair across **0.15–0.85** rather than paying one
+  side out. A second pass established WHY, correcting an earlier wrong guess of "retirement": the match
+  was **never played** (16/17 absent from our archive; the one present scored `W/O`; the rules need a
+  winner "after a ball has been played"), so Kalshi refunds both sides at the prevailing price. Those
+  auto-record as `void` — fully hands-free. Reproduce with `scripts/probe_settlement.py`.
+  A 4-agent adversarial review of the first cut found 8 defects (inverted payoff in the DM, a DM
+  instructing an unparseable command, a failed send silencing a case for good, no liveness surface, a
+  TOCTOU vs the owner's `/result`, and a suite that passed with the sweep disabled) — all fixed,
+  mutation-verified. The ROI co-gate is now a **paper ROI at alert prices** — amendment
+  recorded in DESIGN-DECISIONS before the read, as the pre-registration requires.
+- ~~**#11** dead-man's switch~~ — **DONE 2026-07-30**, owner accepted the tradeoff. Ships INERT: set
+  `HEALTHCHECK_URL` in the droplet's `secrets/.env` (healthchecks.io, ~26h grace) to arm it. It is the
+  only mechanism that catches the two-poller 409 wedge.
 
 ### 3. Deferred model levers — AFTER the gate reads only
 Ranked in `IMPROVEMENTS.md`: K floor → surface cold-start → recency-weighted Elo (conditional on the
@@ -104,12 +115,13 @@ K floor) → direct recalibration (near-dead-end). All touch `p_model`, so all m
 
 ## During the run — command policy
 
-| Safe | Required | Avoid |
+| Safe | Automatic now | Avoid |
 |---|---|---|
-| `/preview` `/find` `/stats` `/recent` `/notes` | `/result` `/close` | `/check` `/scan` |
+| `/preview` `/find` `/stats` `/recent` `/notes` | `/close` `/result` | `/check` `/scan` |
 
-`/result` is not optional: the gate hard-requires realized net-ROI ≥ 0, so missing results make the
-week-12 read unreadable. `/check` and `/scan` log owner-timed opportunities — that alone is why they
+**`/result` is no longer needed at all** (2026-07-30): outcomes auto-record from Kalshi's settlement and
+DM a `🧾`. Matches that were never played auto-record as `void`. It survives purely as an OVERRIDE; the
+only thing escalated to a human is a settlement value never seen before. `/check` and `/scan` log owner-timed opportunities — that alone is why they
 stay in "Avoid"; use `/preview` to inspect the engine instead.
 
 **Watch:** Monday's `logs/refresh.log` (`latest` must advance, no `rejected` warning), the daily

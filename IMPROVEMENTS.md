@@ -3,11 +3,9 @@
 Produced by an adversarial multi-agent improvements pass (Fable 5, 5 lenses -> ruthless prioritiser):
 **34 raw ideas -> 11 do-now, 4 after-gate, 2 needs-data, 7 rejected.**
 
-**Status 2026-07-29: 8 of the 11 do-now items are APPLIED** (#1, #2, #3, #4, #6, #7, #8, #11 — each
-struck through below with what was actually done). Remaining: #5 (small, safe), #9 (deferred by
-choice — it is needed *at* the week-12 read and is just as cheap then), and #10 (deliberately separate:
-the only item that writes to the live sample unattended, so it needs Kalshi's retirement/walkover
-settlement behaviour verified live first).
+**Status 2026-07-30: 9 of the 11 do-now items are APPLIED** (#1, #2, #3, #4, #6, #7, #8, #10, #11 —
+each struck through below with what was actually done). Remaining: **#5** (small, safe) and **#9**
+(deferred by choice — it is needed *at* the week-12 read and is just as cheap then).
 
 The rest of this file is the original review artifact. Prune it before it becomes project doctrine.
 
@@ -298,7 +296,19 @@ should say so.
 
 **Where.** `/home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/scripts/clv_report.py (segment_summaries ~47, main ~85), reusing bootstrap_mean_ci at /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/clv.py:57; coverage map at /home/dkeralia/projects/java/dev/ClaudeProjects/Tennis Betting/matador/sharp.py:32-61`
 
-### 10. Auto-record settlement from Kalshi so the ROI co-gate stays readable  _[medium]_
+### 10. ~~Auto-record settlement from Kalshi~~ — **DONE 2026-07-30** (owner asked; deferral overturned)
+
+**Done.** Held back as the only unattended writer to the live sample, then built when the owner said
+plainly they would forget `/result` — which makes the gate unreadable or selectively biased, worse than
+a slightly cruder metric.
+
+**The pre-req paid off immediately.** Verified against 2,000 live finalized markets: Kalshi settles
+tennis THREE ways, not two. `result='scalar'` (~3%) is a PARTIAL settlement where the mirrored pair
+splits the dollar (0.75/0.25 observed) — its retirement path. The naive "not yes -> loss" mapping would
+have booked **-100% on a bet that returned 25c or 75c a contract**. Also `status` is `finalized`, not
+`settled`. Scalars are left `result` NULL (not `void`, which `summarize` skips — NULL still contributes
+CLV) and DM'd once for a human call. All three guards are mutation-tested. See DESIGN-DECISIONS
+"Auto-recorded settlement" for the `scalar` table and the recorded ROI-co-gate amendment. Original entry below.
 
 **What.** Kalshi's market object carries result (yes/no) once settled and the Market dataclass currently drops
 it - parse it. Then one scheduled job beside _auto_capture_job that, for captured-but-unresulted

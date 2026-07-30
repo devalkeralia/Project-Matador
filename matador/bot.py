@@ -894,6 +894,12 @@ async def auto_result_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     recorded = sum(1 for a in actions if a["action"] == "recorded")
     bd["auto_result"] = {"finished_at": _now_iso(), "ok": True, "n_recorded": recorded}
+    # Log the SUCCESS too, not just failures. The first live sweep wrote 10 outcomes and left no trace
+    # in the log at all -- the only way to tell it had run was to query the DB. The heartbeat stamp
+    # covers the owner; this covers anyone reading logs/matador.log after the fact.
+    log.info("auto-result sweep: %d recorded, %d awaiting a human, %d skipped", recorded,
+             sum(1 for a in actions if a["action"] == "needs_human"),
+             sum(1 for a in actions if a["action"] == "skip"))
     flagged = bd.setdefault("scalar_flagged", set())
     for a in actions:
         if a["action"] not in ("recorded", "needs_human"):

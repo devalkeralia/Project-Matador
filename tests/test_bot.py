@@ -31,7 +31,7 @@ from matador.config import Config
 from matador.kalshi.client import KalshiClient
 from matador.model.probability import WinProbability
 from matador.sharp import SharpOddsClient
-from matador.storage import connect, init_db, insert_opportunity, pending_captures, recent_opportunities
+from matador.storage import connect, init_db, insert_opportunity, pending_captures, recent_opportunities, settled_bets
 
 
 # ---- helpers copied from test_engine.py (no tests/__init__.py -> can't cross-import) ----
@@ -1185,3 +1185,314 @@ def test_help_and_notes_text():
     import matador.bot as bot
     assert all(c in bot.HELP for c in ("/find", "/result", "/close", "/stats", "/notes"))
     assert bot.NOTES.startswith("📘") and "net edge" in bot.NOTES and "CLV" in bot.NOTES
+
+
+# ---- auto-recorded settlement (the ONLY unattended writer to the live paper sample) ----
+
+def make_settled_client(result="yes", status="finalized", settlement_value="1.0000", expect_ticker="M"):
+    """Mock a FINALIZED Kalshi market. Note 'finalized', not 'settled' -- that is what the live API
+    returns for settled tennis markets, verified 2026-07-30 against 2,000 of them.
+
+    Serves ONLY `expect_ticker`: a handler that answers any /markets/ path let a mutation fetching the
+    wrong field (event_ticker instead of market_ticker) pass the whole suite."""
+    def handler(request):
+        if request.url.path.endswith(f"/markets/{expect_ticker}"):
+            return httpx.Response(200, json={"market": {
+                "ticker": expect_ticker, "event_ticker": "E", "status": status, "result": result,
+                "settlement_value_dollars": settlement_value,
+                "yes_sub_title": "Player Aaa", "no_sub_title": "Player Aaa"}})
+        return httpx.Response(404, json={"error": f"wrong ticker: {request.url.path}"})
+    return KalshiClient(base_url="https://x/trade-api/v2", transport=httpx.MockTransport(handler))
+
+
+def _settleable_opp(conn, side="yes"):
+    """A bet whose match is well past its start, with a logged price and contract count."""
+    past = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return insert_opportunity(conn, ts="t", tour="ATP", market_ticker="M", market_player="Player Aaa",
+                              opponent="Player Bbb", side=side, price=0.40, p_model=0.6, net_edge=0.08,
+                              contracts=10, trigger_reason="prematch_value", occurrence_datetime=past)
+
+
+@pytest.mark.parametrize("side,settled,expect", [
+    ("yes", "yes", "win"),    # we took Yes on Player Aaa's market and Aaa won
+    ("yes", "no", "loss"),
+    ("no", "no", "win"),      # we took No -- backing the OPPONENT -- and Aaa lost
+    ("no", "yes", "loss"),
+])
+def test_auto_record_result_maps_our_side_not_the_market_side(side, settled, expect):
+    from matador.bot import auto_record_result
+    conn = _db()
+    oid = _settleable_opp(conn, side=side)
+    with make_settled_client(result=settled) as client:
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "recorded" and a["result"] == expect
+    row = conn.execute("SELECT result, fill_price, contracts_filled, pnl FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["result"] == expect
+    assert row["fill_price"] == pytest.approx(0.40) and row["contracts_filled"] == 10  # the LOGGED alert price
+    assert (row["pnl"] > 0) is (expect == "win")
+    conn.close()
+
+
+def test_auto_record_result_voids_a_scalar_because_the_match_was_never_played():
+    """A 'scalar' means NO BALL WAS PLAYED — Kalshi refunded both sides at the prevailing price.
+
+    Established empirically: of 17 scalar matches inside our results archive's coverage, 16 are absent
+    from it entirely (including marquee main-draw pairings) and the one present scored 'W/O'; the market
+    rules require a winner "after a ball has been played". So this is exactly the schema's `void` —
+    walkover/refund — and it must be EXCLUDED from CLV, not counted: a match that never happened has no
+    closing line to have beaten, so keeping it would measure a phantom event.
+    """
+    from matador.bot import auto_record_result
+    from matador.clv import summarize
+    conn = _db()
+    oid = _settleable_opp(conn)
+    from matador.storage import record_outcome
+    record_outcome(conn, oid, closing_price=0.44, closing_source="auto")   # a close was captured
+    with make_settled_client(result="scalar", settlement_value="0.7500") as client:
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "recorded" and a["result"] == "void" and a["pnl"] == 0.0
+    row = conn.execute("SELECT result, pnl FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["result"] == "void" and row["pnl"] == 0.0
+    s = summarize(settled_bets(conn), make_cfg())
+    assert s["n_clv"] == 0 and s["n_results"] == 0    # excluded from every metric, per the void contract
+    conn.close()
+
+
+def test_auto_record_result_still_asks_a_human_about_an_UNKNOWN_settlement():
+    """Only a settlement we have never seen warrants a human — guessing its semantics is the exact
+    mistake the scalar investigation corrected."""
+    from matador.bot import auto_record_result
+    conn = _db()
+    oid = _settleable_opp(conn)
+    with make_settled_client(result="something_new", settlement_value="0.5000") as client:
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "needs_human" and a["reason"] == "something_new"
+    assert conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0] == 0   # nothing guessed
+    conn.close()
+
+
+def test_auto_record_result_never_overwrites_and_waits_for_settlement():
+    from matador.bot import auto_record_result
+    conn = _db()
+    oid = _settleable_opp(conn)
+
+    with make_settled_client(status="active") as client:            # match still in play
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "skip" and "not_settled" in a["reason"]
+    assert conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0] == 0
+
+    # An owner-entered result is the override and must never be clobbered by the sweep.
+    run_result(conn, oid, "loss", 0.55, 7, make_cfg())
+    with make_settled_client(result="yes") as client:               # Kalshi says our side WON
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "skip" and a["reason"] == "already_recorded"
+    row = conn.execute("SELECT result, fill_price FROM outcomes WHERE opp_id=?", (oid,)).fetchone()
+    assert row["result"] == "loss" and row["fill_price"] == pytest.approx(0.55)   # owner's entry stands
+    conn.close()
+
+
+def test_market_parses_settlement_fields():
+    from matador.kalshi.market import Market
+    m = Market.from_api({"ticker": "T", "event_ticker": "E", "status": "finalized", "result": "scalar",
+                         "settlement_value_dollars": "0.2500"})
+    assert m.result == "scalar" and m.settlement_value == pytest.approx(0.25)
+    # Live ACTIVE markets send result as an EMPTY STRING, not a missing key (see tests/fixtures) --
+    # so the `or None` coercion is load-bearing, and asserting on a missing key would not pin it.
+    bare = Market.from_api({"ticker": "T", "event_ticker": "E", "status": "active", "result": ""})
+    assert bare.result is None and bare.settlement_value is None
+
+
+def test_auto_result_job_dms_records_and_flags_a_scalar_only_once(tmp_path, monkeypatch):
+    """Recorded outcomes are always announced (so a wrong one is correctable now, not at week 12);
+    a scalar is announced ONCE per process so it can't nag on every 8-hourly cycle."""
+    import matador.bot as bot
+    app = _app_for_job(tmp_path, scan_interval_hours=8.0)
+    ctx = _FakeJobContext(app)
+    monkeypatch.setattr("matador.bot._auto_result_job", lambda cfg, demo: [
+        {"opp_id": 1, "action": "recorded", "result": "win", "pnl": 5.5, "fill": 0.40,
+         "contracts": 10, "market_player": "Player Aaa", "side": "yes"},
+        # An UNKNOWN settlement is the only kind that still asks a human.
+        {"opp_id": 2, "action": "needs_human", "reason": "mystery", "settlement_value": 0.75,
+         "payoff": 0.25, "entry": 0.40, "market_player": "Player Bbb", "side": "no"},
+        {"opp_id": 3, "action": "skip", "reason": "not_settled(active)"},
+    ])
+    asyncio.run(bot.auto_result_job(ctx))
+    assert len(ctx.bot.sent) == 2                                   # the skip is NOT announced
+    # Assert the PAYLOAD, not just the id: this DM is the only review the owner gets of an
+    # unattended write, so a wrong price or size in it defeats the whole guard.
+    rec = ctx.bot.sent[0][1]
+    assert "Auto-recorded opp #1" in rec and "WIN" in rec
+    assert "40¢" in rec and "10c" in rec and "$+5.50" in rec
+    ask = ctx.bot.sent[1][1]
+    assert "Opp #2" in ask and "mystery" in ask
+    assert "25¢ per contract" in ask and "75¢" not in ask   # OUR side's payoff, never Kalshi's raw value
+    assert "/result 2 win 0.40" in ask and "/result 2 void" in ask  # win/loss need a fill price
+
+    asyncio.run(bot.auto_result_job(ctx))                           # second cycle, same state
+    assert len(ctx.bot.sent) == 3                                   # only the record re-DMs, not the scalar
+
+
+def test_build_application_registers_the_auto_result_job():
+    off = build_application("1:x", make_cfg(), object(), chat_id=42)
+    assert not off.job_queue.get_jobs_by_name("auto_result")        # no cadence -> no timer
+    on = build_application("1:x", make_cfg(scan_interval_hours=8.0), object(), chat_id=42)
+    assert on.job_queue.get_jobs_by_name("auto_result")
+
+
+def test_auto_result_sweep_runs_end_to_end_and_respects_the_age_filter(tmp_path, monkeypatch):
+    """Exercises the REAL sweep: storage.awaiting_result -> auto_record_result -> record_outcome.
+
+    Every other test here monkeypatches `_auto_result_job`, which left the autonomous path -- the
+    entire point of the feature -- unexecuted: disabling the sweep body wholesale, or setting
+    RESULT_AUTO_AFTER_HOURS to 2000, both passed the full suite.
+    """
+    import matador.bot as bot
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+
+    def _z(hours_ago):
+        return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    def _opp(occ, side="yes"):
+        return insert_opportunity(conn, ts=_z(24), tour="ATP", market_ticker="M", market_player="Player Aaa",
+                                  opponent="Player Bbb", side=side, price=0.40, p_model=0.6, net_edge=0.08,
+                                  contracts=10, trigger_reason="prematch_value", occurrence_datetime=occ)
+
+    finished = _opp(_z(6))          # match well over -> should be recorded
+    just_started = _opp(_z(1))      # inside the age filter -> must be left alone
+    untimed = _opp(None)            # no scheduled start; ts is 24h old -> must still be swept
+    conn.close()
+
+    monkeypatch.setattr("matador.bot._client", lambda cfg, demo: make_settled_client(result="yes"))
+    actions = bot._auto_result_job(make_cfg(db_path=dbp), True)
+
+    by_id = {a["opp_id"]: a for a in actions}
+    assert by_id[finished]["action"] == "recorded" and by_id[finished]["result"] == "win"
+    assert untimed in by_id, "a row with no occurrence_datetime must not vanish from the work list"
+    assert just_started not in by_id, "the age filter must skip a match that only just started"
+
+    conn = connect(dbp)
+    assert conn.execute("SELECT COUNT(*) FROM outcomes WHERE result IS NOT NULL").fetchone()[0] == 2
+    row = conn.execute("SELECT result, fill_price, contracts_filled, pnl FROM outcomes WHERE opp_id=?",
+                       (finished,)).fetchone()
+    from matador.clv import net_pnl
+    assert row["pnl"] == pytest.approx(net_pnl("win", 0.40, 10, 0.07))   # EXACT, net of the round-up fee
+    conn.close()
+
+
+def test_auto_record_result_refuses_a_row_with_no_contracts():
+    """A 0-size row would land in the hit-rate numerator while contributing nothing to ROI."""
+    from matador.bot import auto_record_result
+    conn = _db()
+    oid = insert_opportunity(conn, ts="t", tour="ATP", market_ticker="M", market_player="Player Aaa",
+                             opponent="Player Bbb", side="yes", price=0.40, p_model=0.6, net_edge=0.08,
+                             contracts=None, trigger_reason="prematch_value",
+                             occurrence_datetime=(datetime.now(timezone.utc) - timedelta(hours=6))
+                             .isoformat(timespec="seconds").replace("+00:00", "Z"))
+    with make_settled_client(result="yes") as client:
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "needs_human" and a["reason"] == "no_contracts_logged"
+    assert conn.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0] == 0
+    conn.close()
+
+
+def test_auto_record_result_cannot_clobber_a_result_written_mid_sweep():
+    """Closes the read-guard/write TOCTOU: the guard is read, then a Kalshi call happens, then the
+    write. An owner /result landing in that window must WIN, so absence is checked in the write."""
+    from matador.bot import auto_record_result
+    from matador.storage import record_result_if_absent
+    conn = _db()
+    oid = _settleable_opp(conn)
+
+    class _RacingClient:
+        """Simulates the owner typing /result while our get_market round trip is in flight."""
+        def get_market(self, ticker):
+            run_result(conn, oid, "void", 0.0, None, make_cfg())   # the human, mid-flight
+            from matador.kalshi.market import Market
+            return Market.from_api({"ticker": ticker, "event_ticker": "E", "status": "finalized",
+                                    "result": "yes", "settlement_value_dollars": "1.0000"})
+
+    a = auto_record_result(_RacingClient(), conn, oid, make_cfg())
+    assert a["action"] == "skip" and a["reason"] == "already_recorded"
+    assert conn.execute("SELECT result FROM outcomes WHERE opp_id=?", (oid,)).fetchone()["result"] == "void"
+
+    # and the primitive itself refuses to overwrite
+    assert record_result_if_absent(conn, oid, result="win", pnl=1.0) is False
+    conn.close()
+
+
+def test_auto_record_result_leaves_an_owner_void_alone():
+    from matador.bot import auto_record_result
+    conn = _db()
+    oid = _settleable_opp(conn)
+    run_result(conn, oid, "void", 0.0, None, make_cfg())
+    with make_settled_client(result="yes") as client:
+        a = auto_record_result(client, conn, oid, make_cfg())
+    assert a["action"] == "skip" and a["reason"] == "already_recorded"
+    assert conn.execute("SELECT result FROM outcomes WHERE opp_id=?", (oid,)).fetchone()["result"] == "void"
+    conn.close()
+
+
+def test_heartbeat_warns_when_the_auto_result_sweep_failed():
+    """A failing sweep is otherwise invisible: the 📝 list just grows, roi stays None, gate unreadable."""
+    import matador.bot as bot
+    conn = _db()
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    stamp = {"finished_at": (now - timedelta(hours=9)).isoformat(timespec="seconds"), "ok": False}
+    txt = bot._heartbeat_text(conn, make_cfg(), now=now, auto_result=stamp)
+    assert "auto-result sweep FAILED 9h ago" in txt and "roi stays unreadable" in txt
+    assert txt.startswith("🚨")                                   # demotes the header, not just a note
+    healthy = bot._heartbeat_text(conn, make_cfg(), now=now,
+                                  auto_result={"finished_at": now.isoformat(), "ok": True, "n_recorded": 2})
+    assert "auto-result" not in healthy                          # silent when fine
+    conn.close()
+
+
+def test_auto_result_job_survives_a_failed_dm_and_stamps_health(tmp_path, monkeypatch):
+    """One Telegram blip must not swallow announcements of rows ALREADY written, nor permanently
+    silence a scalar (the flag is added only after a successful send)."""
+    import matador.bot as bot
+    app = _app_for_job(tmp_path, scan_interval_hours=8.0)
+    ctx = _FakeJobContext(app)
+    monkeypatch.setattr("matador.bot._auto_result_job", lambda cfg, demo: [
+        {"opp_id": 2, "action": "needs_human", "reason": "mystery", "settlement_value": 0.75,
+         "payoff": 0.25, "entry": 0.40, "market_player": "Player Bbb", "side": "no"},
+    ])
+    calls = []
+
+    async def flaky(chat_id, text):
+        calls.append(text)
+        raise RuntimeError("telegram 429")
+    monkeypatch.setattr(ctx.bot, "send_message", flaky)
+    asyncio.run(bot.auto_result_job(ctx))                 # must not raise
+    assert len(calls) == 1
+    assert 2 not in app.bot_data["scalar_flagged"]        # NOT flagged -> it will be retried
+    assert app.bot_data["auto_result"]["ok"] is True      # the sweep itself succeeded
+
+    sent = []
+
+    async def ok(chat_id, text):
+        sent.append(text)
+    monkeypatch.setattr(ctx.bot, "send_message", ok)
+    asyncio.run(bot.auto_result_job(ctx))
+    assert len(sent) == 1 and 2 in app.bot_data["scalar_flagged"]   # retried, then flagged
+
+
+def test_scalar_payoff_is_inverted_for_a_no_position():
+    """`settlement_value` is the YES contract's value, so a 'no' holder received 1 - it.
+
+    Reporting the raw number would be exactly backwards on every 'no' bet -- and since the owner rules
+    on these by hand, a DM saying "75¢" when they actually got 25¢ talks them into booking a win on a
+    loser. Worth its own test: the DM-layer test supplies `payoff` pre-computed, so it cannot catch a
+    missing inversion here.
+    """
+    from matador.bot import auto_record_result
+    for side, expected in (("yes", 0.75), ("no", 0.25)):
+        conn = _db()
+        oid = _settleable_opp(conn, side=side)
+        with make_settled_client(result="scalar", settlement_value="0.7500") as client:
+            a = auto_record_result(client, conn, oid, make_cfg())
+        assert a["action"] == "recorded" and a["result"] == "void"
+        assert a["payoff"] == pytest.approx(expected), f"side={side}"
+        conn.close()

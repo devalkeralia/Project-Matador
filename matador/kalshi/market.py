@@ -29,6 +29,16 @@ class Market:
     volume: float | None
     open_interest: float | None
     occurrence_datetime: str | None
+    # Settlement, populated once the market finalizes. `result` is 'yes' | 'no' | 'scalar', and the
+    # settled status string is 'finalized'. 'scalar' is a PARTIAL settlement where the two mirrored
+    # markets SPLIT the dollar because NO BALL WAS PLAYED -- the match never happened (withdrawal /
+    # walkover / cancellation), so Kalshi refunds both sides at roughly the prevailing price. Measured
+    # over 2,000 settled tennis markets (scripts/probe_settlement.py, 2026-07-30): 3.6% of ATP and 2.2%
+    # of WTA, values spread across 0.15-0.85, each pair summing to exactly $1.00 (i.e. a price pair, not
+    # a payout). Never map it to a loss: it is a refund. A mid-match RETIREMENT is NOT this -- someone
+    # advances, so it settles yes/no normally.
+    result: str | None = None
+    settlement_value: float | None = None
 
     @classmethod
     def from_api(cls, raw: dict) -> "Market":
@@ -47,4 +57,6 @@ class Market:
             volume=_to_float(raw.get("volume_fp")),
             open_interest=_to_float(raw.get("open_interest_fp")),
             occurrence_datetime=raw.get("occurrence_datetime") or None,
+            result=raw.get("result") or None,
+            settlement_value=_to_float(raw.get("settlement_value_dollars")),
         )

@@ -30,7 +30,7 @@ from telegram.ext import Application, ApplicationBuilder, CommandHandler, Contex
 from matador import storage
 from matador.alerts import (
     format_abstain, format_alert, format_close, format_find, format_no_alert,
-    format_recent, format_result, format_scan, format_stats,
+    format_auto_result, format_recent, format_result, format_scan, format_stats,
 )
 from matador.clv import net_pnl, summarize
 from matador.engine import (
@@ -57,7 +57,8 @@ HELP = (
     "/scan — sweep all open ATP/WTA markets for value\n"
     "/recent [n] — the last n logged opportunities (default 10)\n"
     "/close [opp_id] [pre] — capture the closing line near match start (no id = all pending; 'pre' = confirm pre-match on an untimed market)\n"
-    "/result <opp_id> <win|loss> <fill_price> [contracts] — record how a trade went\n"
+    "/result <opp_id> <win|loss> <fill_price> [contracts] — OVERRIDE an outcome (results are recorded\n"
+    "        automatically from Kalshi's settlement; you only need this to correct one)\n"
     "/stats — hit rate, P&L, and closing-line value (the go-live metric)\n"
     "/notes — how to read an alert & the /check breakdown\n"
     "/help — this message"
@@ -83,7 +84,12 @@ NOTES = (
     "Tracking (the go-live test):\n"
     "• /close [opp_id] — snapshot the market price at match start (the CLV baseline); run it near "
     "the start. No id = capture all pending.\n"
-    "• /result <opp_id> <win|loss> <fill_price> [contracts] — record the outcome + your fill.\n"
+    "• Outcomes record THEMSELVES from Kalshi's settlement a few hours after each match, and you get a\n"
+    "  🧾 confirmation DM. Nothing to do — including for injuries and retirements, which settle normally\n"
+    "  because someone still advances. A match that was never PLAYED (withdrawal/walkover) is refunded\n"
+    "  by Kalshi and auto-recorded as VOID, excluded from the stats. Only a settlement I have never seen\n"
+    "  before asks you anything (⚖️).\n"
+    "• /result <opp_id> <win|loss> <fill_price> [contracts] — override an outcome you disagree with.\n"
     "• /stats — hit rate, net P&L, and mean CLV with a 95% CI. CLV = closing price − your entry "
     "(positive = you beat the close). Go-live needs the CI lower bound > 0 over 200+ bets.\n\n"
     "Signals only — I never place orders. You trade manually on Kalshi."
@@ -360,6 +366,85 @@ def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None, shar
                 return {"action": "rescheduled", "opp_id": opp_id, "new_start": market.occurrence_datetime}
     return {"action": "captured",
             "result": capture_close(client, conn, opp_id, source="auto", now=now, sharp_client=sharp_client)}
+
+
+SETTLED_STATUSES = ("settled", "finalized")   # Kalshi reports 'finalized' on settled tennis markets
+RESULT_AUTO_AFTER_HOURS = 2                   # don't even look until the match has had time to finish
+
+
+def auto_record_result(client, conn, opp_id: int, cfg) -> dict:
+    """Record a settled paper bet's outcome from Kalshi's own settlement. Returns an action dict.
+
+    Exists because the go-live gate hard-requires realized net-ROI >= 0, and `roi` stays None until a
+    result is entered -- so 200+ manual /result entries over 12 weeks stood between the run and a
+    readable gate. Forgetting a few weeks doesn't just lose rows, it biases the sample toward whichever
+    results the owner felt like typing.
+
+    Three guards, none optional (this is the only unattended writer to the live sample):
+      1. Only an unambiguous 'yes'/'no' settlement is recorded. Kalshi's THIRD value, 'scalar', is a
+         PARTIAL settlement where the mirrored pair splits the dollar (0.75/0.25 observed live) -- its
+         retirement/anomaly path. Mapping that to a loss would book -100% on a bet that paid back 25c
+         or 75c a contract, so it is left for a human. The row keeps result NULL, which still counts
+         toward CLV (the binding metric needs only entry + close) while staying out of P&L.
+      2. Never overwrites an existing result -- /result stays the owner's override, including for a
+         real fill at a price other than the alert price.
+      3. Every auto-record is DM'd, so a wrong one can be corrected rather than discovered at week 12.
+
+    The recorded fill is the LOGGED ALERT PRICE and the logged contract count -- exactly what a
+    log-only paper bet transacted at. That makes the ROI co-gate a paper ROI at alert prices; see
+    DESIGN-DECISIONS "Auto-recorded settlement".
+    """
+    opp = get_opportunity(conn, opp_id)
+    if opp is None:
+        return {"opp_id": opp_id, "action": "skip", "reason": "no_such_opp"}
+    prior = storage.get_outcome(conn, opp_id)
+    if prior is not None and prior["result"] is not None:
+        return {"opp_id": opp_id, "action": "skip", "reason": "already_recorded"}
+    market = client.get_market(opp["market_ticker"])
+    if market.status not in SETTLED_STATUSES:
+        return {"opp_id": opp_id, "action": "skip", "reason": f"not_settled({market.status})"}
+    # Report what OUR side received, not Kalshi's raw number: settlement_value is the YES contract's
+    # value, so a 'no' holder got 1 - it. The un-inverted figure would misdescribe every 'no' bet.
+    sv = market.settlement_value
+    payoff = None if sv is None else (sv if opp["side"] == "yes" else 1.0 - sv)
+    if market.result == "scalar":
+        # A 'scalar' means NO BALL WAS PLAYED, so Kalshi could not pay either side out and refunded
+        # both at roughly the prevailing price -- established by checking 17 scalar matches against
+        # our own results archive (16 absent, the 1 present scored 'W/O') and confirmed by the market
+        # rules, which require a winner "after a ball has been played". See DESIGN-DECISIONS.
+        # That is precisely this schema's 'void': a walkover/refund, excluded from CLV, hit-rate and
+        # P&L. Excluding it is also right on the merits -- a match that never happened has no line to
+        # have beaten, so its CLV observation would be measuring a phantom event.
+        if not storage.record_result_if_absent(conn, opp_id, result="void", pnl=0.0):
+            return {"opp_id": opp_id, "action": "skip", "reason": "already_recorded"}
+        return {"opp_id": opp_id, "action": "recorded", "result": "void", "pnl": 0.0,
+                "fill": opp["price"], "contracts": opp["contracts"] or 0, "payoff": payoff,
+                "market_player": opp["market_player"], "side": opp["side"]}
+    if market.result not in ("yes", "no"):
+        # An unrecognised settlement is the one case still worth a human: we have never seen one, so
+        # guessing its semantics is exactly the mistake the scalar investigation just corrected.
+        return {"opp_id": opp_id, "action": "needs_human", "reason": market.result or "no_result",
+                "settlement_value": sv, "payoff": payoff, "entry": opp["price"],
+                "market_player": opp["market_player"], "side": opp["side"]}
+    # Our side won iff Kalshi's settled side IS the side we took (yes on the market's Yes player, or
+    # no on it -- which backs the opponent).
+    result = "win" if market.result == opp["side"] else "loss"
+    fill, contracts = opp["price"], opp["contracts"]
+    if not contracts:
+        # No size logged -> there is no bet to score. Recording it anyway would put a 0-contract row
+        # in the hit-rate numerator while contributing nothing to ROI (see clv.summarize), i.e. a
+        # confidently-reported outcome for a position that never existed.
+        return {"opp_id": opp_id, "action": "needs_human", "reason": "no_contracts_logged",
+                "settlement_value": market.settlement_value, "payoff": None, "entry": fill,
+                "market_player": opp["market_player"], "side": opp["side"]}
+    pnl = net_pnl(result, fill, contracts, cfg.fee_coefficient)
+    # Absence-checked WRITE, not a read-then-write: an owner /result landing during our Kalshi round
+    # trip must win. If it did, report the skip rather than claiming a record we didn't make.
+    if not storage.record_result_if_absent(conn, opp_id, fill_price=fill, contracts_filled=contracts,
+                                           result=result, pnl=pnl):
+        return {"opp_id": opp_id, "action": "skip", "reason": "already_recorded"}
+    return {"opp_id": opp_id, "action": "recorded", "result": result, "pnl": pnl, "fill": fill,
+            "contracts": contracts, "market_player": opp["market_player"], "side": opp["side"]}
 
 
 def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int | None, cfg) -> str:
@@ -777,6 +862,56 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("sharp-at-entry: filled %d/%d new opp(s)", filled, n_new)
 
 
+def _auto_result_job(cfg, demo) -> list[dict]:
+    """Sweep every bet whose match has finished but has no result, and record what Kalshi settled."""
+    out: list[dict] = []
+    with _client(cfg, demo) as client:
+        def work(conn):
+            for row in storage.awaiting_result(conn, _now_iso(), RESULT_AUTO_AFTER_HOURS):
+                try:
+                    out.append(auto_record_result(client, conn, row["id"], cfg))
+                except Exception:  # one unreachable market must not abort the sweep
+                    log.warning("auto-result failed for opp %s", row["id"], exc_info=True)
+        _with_conn(cfg, work)
+    return out
+
+
+async def auto_result_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Timer: auto-record settled outcomes so the ROI co-gate stays readable without 200 manual entries.
+
+    DMs only what it RECORDED (or what needs a human), never the routine 'still in play' skips. A
+    'scalar' partial settlement is DM'd once per process so it can't nag every cycle, and it stays in
+    the heartbeat's awaiting-/result list until the owner rules on it."""
+    bd = context.bot_data
+    try:
+        actions = await asyncio.to_thread(_auto_result_job, bd["cfg"], bd["demo"])
+    except Exception:
+        log.exception("auto-result sweep failed")
+        # Stamp the FAILURE so the heartbeat can say so. Without this the sweep could fail every cycle
+        # for weeks while the daily DM still read "Matador OK" -- and since roi stays None, the gate
+        # would be unreadable at week 12. Exactly the hole _scan_status_line exists to close.
+        bd["auto_result"] = {"finished_at": _now_iso(), "ok": False, "n_recorded": 0}
+        return
+    recorded = sum(1 for a in actions if a["action"] == "recorded")
+    bd["auto_result"] = {"finished_at": _now_iso(), "ok": True, "n_recorded": recorded}
+    flagged = bd.setdefault("scalar_flagged", set())
+    for a in actions:
+        if a["action"] not in ("recorded", "needs_human"):
+            continue
+        if a["action"] == "needs_human" and a["opp_id"] in flagged:
+            continue
+        try:
+            await context.bot.send_message(chat_id=bd["chat_id"], text=format_auto_result(a))
+        except Exception:
+            # Per-send, so one transient Telegram error can't swallow the announcements of rows
+            # ALREADY committed to the DB -- those are never re-announced (the next sweep skips them
+            # as already_recorded), so a dropped DM is a permanently unreviewed auto-write.
+            log.warning("could not DM auto-result for opp %s", a["opp_id"], exc_info=True)
+            continue
+        if a["action"] == "needs_human":
+            flagged.add(a["opp_id"])  # only AFTER a successful send, else a blip silences it for good
+
+
 # ---- daily heartbeat (liveness: a silent outage otherwise looks like 'no edge found') ----
 
 STALE_DATA_WARN_DAYS = 10   # weekly refresh + slack; past this the feed has almost certainly stalled
@@ -870,8 +1005,22 @@ def _scan_status_line(scan: dict | None, now: datetime | None = None) -> str:
     return f"last scan {age}: ok, {scan.get('n_new', 0)} new"
 
 
+def _auto_result_status_line(auto: dict | None, now: datetime | None = None) -> str | None:
+    """A ⚠️ line when the auto-result sweep last FAILED, else None (silence when healthy).
+
+    Returns a warning rather than a status line because the sweep failing is invisible otherwise: the
+    📝 awaiting-/result list just grows, `roi` stays None, and the gate is unreadable at week 12."""
+    if not auto or auto.get("ok"):
+        return None
+    when = _parse_dt(auto.get("finished_at"))
+    ref = now or datetime.now(timezone.utc)
+    age = f"{(ref - when).total_seconds() / 3600:.0f}h ago" if when else "recently"
+    return f"⚠️ auto-result sweep FAILED {age} — outcomes are NOT being recorded (roi stays unreadable)"
+
+
 def _heartbeat_text(conn, cfg, drift: list[str] | None = None, scan: dict | None = None,
-                    credits: int | None = None, now: datetime | None = None) -> str:
+                    credits: int | None = None, now: datetime | None = None,
+                    auto_result: dict | None = None) -> str:
     s = summarize(settled_bets(conn), cfg)
     c = s["captures"]
     lines = [
@@ -895,6 +1044,9 @@ def _heartbeat_text(conn, cfg, drift: list[str] | None = None, scan: dict | None
         ids = ", ".join(f"#{r['id']}" for r in untimed[:_OVERDUE_IDS_SHOWN])
         lines.append(f"⚠️ {len(untimed)} pending with NO start time ({ids}) — never auto-captures; "
                      f"run /close <id> pre")
+    auto_line = _auto_result_status_line(auto_result, now)
+    if auto_line:
+        lines.append(auto_line)
     if credits is not None and credits < LOW_CREDITS_WARN:
         lines.append(f"⚠️ odds-api credits low: {credits} left — sharp_close goes NULL when they run out")
     if drift:
@@ -908,8 +1060,9 @@ def _heartbeat_text(conn, cfg, drift: list[str] | None = None, scan: dict | None
 
 
 def _heartbeat_job(cfg, drift: list[str] | None = None, scan: dict | None = None,
-                   credits: int | None = None) -> str:
-    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg, drift, scan, credits))
+                   credits: int | None = None, auto_result: dict | None = None) -> str:
+    return _with_conn(cfg, lambda conn: _heartbeat_text(conn, cfg, drift, scan, credits,
+                                                        auto_result=auto_result))
 
 
 def ping_dead_man_switch(url: str | None, timeout: float = 5.0) -> str | None:
@@ -945,7 +1098,8 @@ async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     bd = context.bot_data
     try:
         msg = await asyncio.to_thread(_heartbeat_job, bd["cfg"], bd.get("drift"),
-                                      bd.get("scan"), last_requests_remaining())
+                                      bd.get("scan"), last_requests_remaining(),
+                                      bd.get("auto_result"))
     except Exception:
         log.exception("heartbeat failed")
         return
@@ -1000,6 +1154,18 @@ def build_application(token: str, cfg, model, chat_id, *, demo: bool = False, de
             interval=cfg.scan_interval_hours * 3600.0,
             first=SCHEDULED_SCAN_FIRST,
             name="scheduled_scan",
+            job_kwargs={"max_instances": 1, "coalesce": True},
+        )
+    # Auto-record settled outcomes on the SAME cadence as the scan (no new knob: the gate needs
+    # results within a day, and the heartbeat only nags past 12h, so 8-hourly clears them first).
+    # Its own job rather than a tail on scheduled_scan_job, whose except path returns early -- a
+    # Kalshi hiccup in the sweep must not also stop results from being recorded.
+    if app.job_queue is not None and cfg.scan_interval_hours:
+        app.job_queue.run_repeating(
+            auto_result_job,
+            interval=cfg.scan_interval_hours * 3600.0,
+            first=SCHEDULED_SCAN_FIRST + 60.0,   # just after the first scan, not simultaneously
+            name="auto_result",
             job_kwargs={"max_instances": 1, "coalesce": True},
         )
     if app.job_queue is not None and cfg.heartbeat_hours:

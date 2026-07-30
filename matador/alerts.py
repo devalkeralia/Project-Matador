@@ -228,6 +228,36 @@ def format_close(r: dict) -> str:
     return line
 
 
+def format_auto_result(a: dict) -> str:
+    """DM for an auto-recorded settlement, or for one that needs the owner's call.
+
+    Every auto-record is announced on purpose: it is the only thing that writes to the paper sample
+    unattended, so a wrong one must be correctable now rather than discovered at week 12."""
+    if a["action"] == "needs_human":
+        # `payoff` is what OUR side received per contract, already inverted for a 'no' position by the
+        # caller. Printing Kalshi's raw settlement_value here would be exactly backwards on every 'no'
+        # bet -- it is the YES contract's value -- and would talk the owner into the wrong /result.
+        payoff = a.get("payoff")
+        priced = f", paying our side {_cents(payoff)} per contract" if payoff is not None else ""
+        cause = ("Kalshi split the pair instead of paying one side out (retirement/anomaly)"
+                 if a["reason"] == "scalar" else "Kalshi settled it in a way I don't recognise")
+        return (f"⚖️ Opp #{a['opp_id']} ({a['market_player']} {a['side'].upper()}) settled "
+                f"'{a['reason']}'{priced} — {cause}, so I have NOT recorded it.\n"
+                f"Your call, and note win/loss need a fill price:\n"
+                f"   /result {a['opp_id']} win {a['entry']:.2f}   ·   "
+                f"/result {a['opp_id']} loss {a['entry']:.2f}   ·   /result {a['opp_id']} void")
+    head = f"🧾 Auto-recorded opp #{a['opp_id']}: {a['market_player']} {a['side'].upper()} — "
+    if a["result"] == "void":
+        payoff = a.get("payoff")
+        priced = f" at {_cents(payoff)}" if payoff is not None else ""
+        return (head + f"VOID (Kalshi settled 'scalar'{priced}: the match was never played, so both "
+                       f"sides were refunded at the prevailing price). Excluded from CLV, hit-rate "
+                       f"and P&L.\nDisagree? /result {a['opp_id']} win|loss <fill>.")
+    return (head + f"{a['result'].upper()} at the alert price {_cents(a['fill'])}, {a['contracts']}c → "
+                   f"P&L ${a['pnl']:+.2f} (net of fee). Wrong? Override with "
+                   f"/result {a['opp_id']} win|loss <fill>.")
+
+
 def format_stats(s: dict) -> str:
     """Render the /stats summary (matador.clv.summarize output): hit rate, P&L, and the CLV gate."""
     lines = ["📊 Paper-trading stats", "", f"Opportunities logged: {s['n_opportunities']}"]

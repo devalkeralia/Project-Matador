@@ -169,6 +169,28 @@ def record_outcome(conn: sqlite3.Connection, opp_id: int, **fields) -> None:
     conn.commit()
 
 
+def record_result_if_absent(conn: sqlite3.Connection, opp_id: int, **fields) -> bool:
+    """Record an outcome ONLY if no result is stored yet. Returns True if this call wrote it.
+
+    The auto-recorder reads its "don't overwrite" guard, then makes a Kalshi round trip, then writes --
+    a window in which the owner can type /result and have it silently replaced by a fabricated fill.
+    Making the absence check part of the WRITE closes that race, so a human entry always wins.
+    """
+    unknown = set(fields) - set(_OUTCOME_COLUMNS)
+    if unknown:
+        raise ValueError(f"unknown outcomes field(s): {sorted(unknown)}")
+    columns = ["opp_id", *fields]
+    placeholders = ", ".join("?" for _ in columns)
+    updates = ", ".join(f"{c} = excluded.{c}" for c in fields)
+    cur = conn.execute(
+        f"INSERT INTO outcomes ({', '.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(opp_id) DO UPDATE SET {updates} WHERE outcomes.result IS NULL",
+        [opp_id, *(fields[c] for c in fields)],
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
 def update_occurrence(conn: sqlite3.Connection, opp_id: int, occurrence_datetime: str) -> None:
     """Refresh a logged opportunity's scheduled match time -- the ONLY writer of this column after
     insert. Called when the live Kalshi market shows the match was postponed, so the closing-line
@@ -244,11 +266,15 @@ def awaiting_result(conn: sqlite3.Connection, now_iso: str, hours: int = 12) -> 
     so a few forgotten weeks make the week-12 read unreadable, or biased toward whichever results the
     owner happened to feel like entering. Unlike a match result, a paper FILL price cannot be
     reconstructed after the fact, which is why this needs surfacing while the memory is fresh."""
+    # COALESCE to the log timestamp so a row with no scheduled start is still swept and still nagged.
+    # Filtering those out left them in no work list at all: never auto-recorded, never listed, ROI
+    # missing forever. No such row exists live today (verified 2026-07-30), which is exactly why it
+    # would have gone unnoticed.
     return conn.execute(
         "SELECT o.id, o.occurrence_datetime FROM opportunities o "
         "  LEFT JOIN outcomes oc ON oc.opp_id = o.id "
-        "WHERE o.occurrence_datetime IS NOT NULL AND o.occurrence_datetime < ? "
-        "  AND (oc.result IS NULL) ORDER BY o.occurrence_datetime",
+        "WHERE COALESCE(o.occurrence_datetime, o.ts) < ? "
+        "  AND (oc.result IS NULL) ORDER BY COALESCE(o.occurrence_datetime, o.ts)",
         (_shift_iso(now_iso, -hours),),
     ).fetchall()
 

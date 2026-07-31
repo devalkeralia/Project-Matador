@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from matador.clv import MIN_BETS
 from matador.engine import Opportunity
+from matador.names import display_name
 
 
 def _cents(price: float) -> str:
@@ -218,14 +219,39 @@ def format_close(r: dict) -> str:
     cp = r.get("closing_price")
     if cp is not None:
         delta_cents = (cp - r["entry_price"]) * 100
-        line = (f"{prefix}Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} @ "
+        line = (f"{prefix}Closing line opp #{r['opp_id']}: {_backed_line(r)} @ "
                 f"{_cents(cp)} (entry {_cents(r['entry_price'])} → CLV {delta_cents:+.0f}¢)")
     else:  # sharp-only capture (Kalshi book too thin for a mid)
-        line = f"{prefix}Closing line opp #{r['opp_id']}: {r['market_player']} {r['side'].upper()} — Kalshi book thin (no mid)"
+        line = f"{prefix}Closing line opp #{r['opp_id']}: {_backed_line(r)} — Kalshi book thin (no mid)"
     if r.get("sharp_close") is not None:  # the sharp (Pinnacle) reference -- the binding go-live basis
         sharp_edge = (r["sharp_close"] - r["entry_price"]) * 100
         line += f"  · sharp {r.get('sharp_source')} {_cents(r['sharp_close'])} (edge {sharp_edge:+.0f}¢)"
     return line
+
+
+def _backed_line(a: dict) -> str:
+    """'A vs B · backed B to win (bought NO on A)' — the matchup, who we're rooting for, and the
+    contract that expresses it.
+
+    Three things this wording is carefully doing:
+      - naming the OPPONENT at all, so a DM is readable without scrolling back through the chat;
+      - "to win", because the bare side letter next to a player read as negating THAT player: an
+        earlier cut rendered 'backed Kamil Majchrzak (NO)', which looks like a bet against Majchrzak
+        when it is a bet ON him;
+      - attaching YES/NO to `market_player`, the player whose contract it actually is. On a no bet
+        that is the OTHER player, which is the whole source of the confusion.
+    The matchup keeps FULL names (it is the headline fact, and one authoritative rendering per player
+    avoids any doubt about who played); the back-reference in parentheses uses the broadcast short form
+    from names.display_name ("T. Fritz"), which is where full names were just noise.
+    Falls back to the old rendering if a caller hasn't supplied the matchup fields.
+    """
+    match, backed = a.get("match"), a.get("backed")
+    if not match:
+        return f"{a['market_player']} {a['side'].upper()}"
+    if not backed:
+        return f"{match} · {a['side'].upper()}"
+    return (f"{match} · backed {backed} to win "
+            f"(bought {a['side'].upper()} on {display_name(a['market_player'], a.get('opponent'))})")
 
 
 def format_auto_result(a: dict) -> str:
@@ -239,14 +265,14 @@ def format_auto_result(a: dict) -> str:
         # bet -- it is the YES contract's value -- and would talk the owner into the wrong /result.
         payoff = a.get("payoff")
         priced = f", paying our side {_cents(payoff)} per contract" if payoff is not None else ""
-        cause = ("Kalshi split the pair instead of paying one side out (retirement/anomaly)"
-                 if a["reason"] == "scalar" else "Kalshi settled it in a way I don't recognise")
-        return (f"⚖️ Opp #{a['opp_id']} ({a['market_player']} {a['side'].upper()}) settled "
-                f"'{a['reason']}'{priced} — {cause}, so I have NOT recorded it.\n"
-                f"Your call, and note win/loss need a fill price:\n"
+        # Only an UNRECOGNISED settlement reaches here: 'scalar' is auto-voided (see
+        # bot.auto_record_result), so this must not claim to know the cause.
+        return (f"⚖️ Opp #{a['opp_id']} — {_backed_line(a)}\n"
+                f"Kalshi settled it '{a['reason']}'{priced}, which I don't recognise, so I have NOT "
+                f"recorded it.\nYour call, and note win/loss need a fill price:\n"
                 f"   /result {a['opp_id']} win {a['entry']:.2f}   ·   "
                 f"/result {a['opp_id']} loss {a['entry']:.2f}   ·   /result {a['opp_id']} void")
-    head = f"🧾 Auto-recorded opp #{a['opp_id']}: {a['market_player']} {a['side'].upper()} — "
+    head = f"🧾 Auto-recorded opp #{a['opp_id']}: {_backed_line(a)} — "
     if a["result"] == "void":
         payoff = a.get("payoff")
         priced = f" at {_cents(payoff)}" if payoff is not None else ""

@@ -34,7 +34,8 @@ from matador.alerts import (
 )
 from matador.clv import net_pnl, summarize
 from matador.engine import (
-    backed_player, evaluate_match, list_open_matches, log_opportunity, scan_outright_finals, scan_series,
+    backed_player, backed_player_from, evaluate_match, list_open_matches, log_opportunity,
+    scan_outright_finals, scan_series,
 )
 from matador.kalshi.client import KalshiClient
 from matador.sharp import SharpOddsClient, last_requests_remaining, sharp_fair_for_opp
@@ -299,7 +300,7 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
     prior = storage.get_outcome(conn, opp_id)
     if prior is not None and (prior["closing_price"] is not None or prior["sharp_close"] is not None):
         return {"opp_id": opp_id, "ok": True, "reason": "already_captured", "side": opp["side"],
-                "market_player": opp["market_player"], "closing_price": prior["closing_price"],
+                "market_player": opp["market_player"], **_matchup(opp), "closing_price": prior["closing_price"],
                 "entry_price": opp["price"], "sharp_close": prior["sharp_close"], "sharp_source": prior["sharp_source"]}
     now = now or datetime.now(timezone.utc)
     start = _parse_dt(opp["occurrence_datetime"])
@@ -329,7 +330,7 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
         # Kalshi book too thin for a mid, but we have a sharp ref -> record sharp-only (row leaves pending).
         storage.record_outcome(conn, opp_id, closing_captured_at=now.isoformat(timespec="seconds"),
                                closing_source=f"sharp_only:{source}", sharp_close=sharp_close, sharp_source=sharp_source)
-        return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"],
+        return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"], **_matchup(opp), **_matchup(opp),
                 "closing_price": None, "entry_price": opp["price"], "sharp_close": sharp_close, "sharp_source": sharp_source}
     storage.record_outcome(conn, opp_id, closing_price=mid, closing_captured_at=now.isoformat(timespec="seconds"),
                            closing_source=source, sharp_close=sharp_close, sharp_source=sharp_source)
@@ -366,6 +367,16 @@ def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None, shar
                 return {"action": "rescheduled", "opp_id": opp_id, "new_start": market.occurrence_datetime}
     return {"action": "captured",
             "result": capture_close(client, conn, opp_id, source="auto", now=now, sharp_client=sharp_client)}
+
+
+def _matchup(opp) -> dict:
+    """The fields every per-bet DM needs to be readable on its own: who played whom, and which of them
+    we actually backed. Without these the message names only the market's Yes subject, so the owner has
+    to scroll back to find the opponent -- and on a 'no' bet the player named is not even the one we
+    backed. Takes a DB Row; reuses engine's single definition of the backed side."""
+    return {"match": f"{opp['market_player']} vs {opp['opponent']}" if opp["opponent"] else opp["market_player"],
+            "backed": backed_player_from(opp["market_player"], opp["opponent"], opp["side"]),
+            "opponent": opp["opponent"]}
 
 
 SETTLED_STATUSES = ("settled", "finalized")   # Kalshi reports 'finalized' on settled tennis markets
@@ -419,13 +430,13 @@ def auto_record_result(client, conn, opp_id: int, cfg) -> dict:
             return {"opp_id": opp_id, "action": "skip", "reason": "already_recorded"}
         return {"opp_id": opp_id, "action": "recorded", "result": "void", "pnl": 0.0,
                 "fill": opp["price"], "contracts": opp["contracts"] or 0, "payoff": payoff,
-                "market_player": opp["market_player"], "side": opp["side"]}
+                "market_player": opp["market_player"], "side": opp["side"], **_matchup(opp)}
     if market.result not in ("yes", "no"):
         # An unrecognised settlement is the one case still worth a human: we have never seen one, so
         # guessing its semantics is exactly the mistake the scalar investigation just corrected.
         return {"opp_id": opp_id, "action": "needs_human", "reason": market.result or "no_result",
                 "settlement_value": sv, "payoff": payoff, "entry": opp["price"],
-                "market_player": opp["market_player"], "side": opp["side"]}
+                "market_player": opp["market_player"], "side": opp["side"], **_matchup(opp)}
     # Our side won iff Kalshi's settled side IS the side we took (yes on the market's Yes player, or
     # no on it -- which backs the opponent).
     result = "win" if market.result == opp["side"] else "loss"
@@ -436,7 +447,7 @@ def auto_record_result(client, conn, opp_id: int, cfg) -> dict:
         # confidently-reported outcome for a position that never existed.
         return {"opp_id": opp_id, "action": "needs_human", "reason": "no_contracts_logged",
                 "settlement_value": market.settlement_value, "payoff": None, "entry": fill,
-                "market_player": opp["market_player"], "side": opp["side"]}
+                "market_player": opp["market_player"], "side": opp["side"], **_matchup(opp)}
     pnl = net_pnl(result, fill, contracts, cfg.fee_coefficient)
     # Absence-checked WRITE, not a read-then-write: an owner /result landing during our Kalshi round
     # trip must win. If it did, report the skip rather than claiming a record we didn't make.
@@ -444,7 +455,8 @@ def auto_record_result(client, conn, opp_id: int, cfg) -> dict:
                                            result=result, pnl=pnl):
         return {"opp_id": opp_id, "action": "skip", "reason": "already_recorded"}
     return {"opp_id": opp_id, "action": "recorded", "result": result, "pnl": pnl, "fill": fill,
-            "contracts": contracts, "market_player": opp["market_player"], "side": opp["side"]}
+            "contracts": contracts, "market_player": opp["market_player"], "side": opp["side"],
+            **_matchup(opp)}
 
 
 def run_result(conn, opp_id: int, result: str, fill_price: float, contracts: int | None, cfg) -> str:

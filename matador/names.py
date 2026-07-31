@@ -80,3 +80,60 @@ def keys_from_title(text: str) -> tuple[str, str] | None:
     if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
         return None
     return surname_only_key(parts[0]), surname_only_key(parts[1])
+
+
+# Lowercase nobiliary/patronymic particles that belong TO the surname ("de Jong", "Van De Zandschulp",
+# "El Aouni", "Del Puerto"). Absorbed by walking backwards, so multi-particle names work.
+_SURNAME_PARTICLES = frozenset({
+    "de", "del", "della", "der", "den", "di", "da", "das", "dos", "du", "la", "le", "el", "al",
+    "van", "von", "ter", "ten", "bin", "ben", "abu", "mc", "st",
+})
+
+
+def display_name(full_name: str, distinct_from: str | None = None) -> str:
+    """Broadcast-style short form: 'T. Fritz', 'J. De Jong', 'J. Prado Angelo'.
+
+    DISPLAY ONLY -- never use this for matching or as a key (that is canonical_key / surname_key). It is
+    a heuristic over a name string and is allowed to be imperfect: every message using it also shows the
+    full name, so a wrong short form cannot mislead about WHO.
+
+    The leading initial is not decoration -- it separates same-surname players a betting message must
+    not conflate ("J. Cerundolo" vs "F. Cerundolo"). It cannot separate same-INITIAL ones on its own:
+    Xinyu Wang and Xiyu Wang both shorten to "X. Wang", and that pair caused a real wrong-player bug
+    here. Pass `distinct_from` (the other player in the same match) and the short form is abandoned for
+    the FULL name whenever the two would collide -- so a Wang-vs-Wang fixture never renders two
+    identical labels. Even so this must stay a display helper and never become an identifier.
+
+    Surname = trailing PARTICLES absorbed backwards, else the last two tokens of a 3+ token name (the
+    broadcast convention: "Prado Angelo", "Davidovich Fokina"), else the last token.
+
+    Deliberately NO given-name exception list. The 3-token class genuinely splits both ways in our data
+    -- "Bautista Agut" is a double surname, "Juan Manuel Cerundolo" a double given name -- and
+    classifying it needs ~90 entries maintained by hand for a cosmetic string. So "T. Martin Etcheverry"
+    is accepted: with the initial occupying the given-name slot it reads as a long surname rather than
+    as a first name, which is the failure mode that actually misleads.
+
+    KNOWN LIMITATION: surname-FIRST names are wrong -- "Zheng Qinwen" yields "Z. Qinwen" instead of
+    "Zheng". Same monitored gap as the resolution path (DESIGN-DECISIONS); it needs a per-player
+    override, not a positional rule.
+    """
+    short = _short_form(full_name)
+    # A collision is worse than verbosity: two identical labels in one message invite exactly the
+    # wrong-player confusion this is meant to prevent, so give up the abbreviation entirely.
+    if distinct_from and short and short == _short_form(distinct_from):
+        return full_name
+    return short
+
+
+def _short_form(full_name: str) -> str:
+    tokens = (full_name or "").split()
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        return tokens[0]
+    i = len(tokens) - 1
+    while i > 1 and tokens[i - 1].lower() in _SURNAME_PARTICLES:
+        i -= 1
+    surname = " ".join(tokens[i:]) if i < len(tokens) - 1 else (
+        " ".join(tokens[-2:]) if len(tokens) >= 3 else tokens[-1])
+    return f"{tokens[0][0].upper()}. {surname}"

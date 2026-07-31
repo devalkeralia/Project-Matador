@@ -352,11 +352,20 @@ def list_open_matches(client, model, cfg, tour) -> list[MatchInfo]:
     return matches
 
 
+def backed_player_from(market_player: str | None, opponent: str | None, side: str) -> str | None:
+    """THE single definition of "which player does this position back": the market's Yes subject on a
+    yes bet, the opponent on a no bet.
+
+    Split out from backed_player so callers holding a DB Row (subscript access) share the rule with
+    callers holding an Opportunity (attribute access), instead of re-implementing it. Duplicating this
+    notion is exactly what produced the 2026-07-29 double-log and its cross-anchor follow-on."""
+    return market_player if side == "yes" else opponent
+
+
 def backed_player(opp: Opportunity) -> str | None:
-    """The player this opportunity actually backs: the market's Yes subject on a yes bet, the
-    opponent on a no bet. The dedup identity -- NOT market_ticker, which varies by which anchor
-    the caller happened to pick (see storage.last_position)."""
-    return opp.market_player if opp.side == "yes" else opp.opponent
+    """The player this opportunity actually backs. The dedup identity -- NOT market_ticker, which
+    varies by which anchor the caller happened to pick (see storage.last_position)."""
+    return backed_player_from(opp.market_player, opp.opponent, opp.side)
 
 
 def log_opportunity(conn, opp: Opportunity, *, force: bool = False) -> int | None:

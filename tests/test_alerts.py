@@ -228,3 +228,100 @@ def test_format_stats_empty_and_populated():
     assert "pinnacle coverage ≥ 50%  (now 100%)" in out
     assert "realized net-ROI ≥ 0  (+12.5%)" in out
     assert "missed-capture rate ≤ 30%  (now 25%)" in out
+
+
+# ---- per-bet DMs must name the matchup, not just the market's Yes subject ----
+
+def _rec(**over):
+    a = dict(opp_id=12, action="recorded", result="loss", pnl=-20.03, fill=0.46, contracts=43,
+             market_player="Anastasia Potapova", opponent="Diana Shnaider",
+             match="Anastasia Potapova vs Diana Shnaider", backed="Anastasia Potapova", side="yes")
+    a.update(over)
+    return a
+
+
+def test_auto_result_dm_names_who_played_whom():
+    """These DMs arrive with no surrounding context, so the opponent has to be IN the message --
+    otherwise the owner scrolls back through the chat to find out who the match was against."""
+    from matador.alerts import format_auto_result
+    out = format_auto_result(_rec())
+    assert "Anastasia Potapova vs Diana Shnaider" in out
+    assert "backed Anastasia Potapova to win (bought YES on A. Potapova)" in out
+    assert "LOSS" in out and "43c" in out and "$-20.03" in out
+
+
+def test_auto_result_dm_names_the_OPPONENT_as_backed_on_a_no_bet():
+    """The sharper half of the same fix. On a `no` bet the market's Yes subject is the player we bet
+    AGAINST, so the old 'Taylor Fritz NO — WIN' read as though Fritz had won."""
+    from matador.alerts import format_auto_result
+    out = format_auto_result(_rec(opp_id=13, result="win", pnl=16.74, market_player="Taylor Fritz",
+                                 opponent="Kamil Majchrzak", match="Taylor Fritz vs Kamil Majchrzak",
+                                 backed="Kamil Majchrzak", side="no"))
+    assert "Taylor Fritz vs Kamil Majchrzak" in out
+    # "to win" + the side attached to FRITZ's contract. A bare "backed Majchrzak (NO)" read as a bet
+    # AGAINST Majchrzak, which is the opposite of the position.
+    assert "backed Kamil Majchrzak to win (bought NO on T. Fritz)" in out
+    assert "backed Kamil Majchrzak (NO)" not in out      # the ambiguous rendering is gone
+    assert "Taylor Fritz NO" not in out                  # and so is the original one
+
+
+def test_auto_result_void_and_needs_human_dms_also_name_the_matchup():
+    from matador.alerts import format_auto_result
+    void = format_auto_result(_rec(result="void", pnl=0.0, payoff=0.60,
+                                   match="Taylor Fritz vs Jack Draper", backed="Taylor Fritz"))
+    assert "Taylor Fritz vs Jack Draper" in void and "never played" in void
+
+    ask = format_auto_result({"opp_id": 21, "action": "needs_human", "reason": "mystery",
+                              "settlement_value": 0.5, "payoff": 0.5, "entry": 0.44,
+                              "market_player": "Elina Svitolina", "match": "Elina Svitolina vs Xinyu Wang",
+                              "backed": "Xinyu Wang", "side": "no"})
+    assert "Elina Svitolina vs Xinyu Wang" in ask
+    assert "backed Xinyu Wang to win (bought NO on E. Svitolina)" in ask
+    # 'scalar' is auto-voided now, so this branch must NOT claim to know the cause
+    assert "don't recognise" in ask and "retirement" not in ask
+
+
+def test_closing_line_dm_names_the_matchup_and_degrades_without_it():
+    from matador.alerts import format_close
+    full = format_close({"opp_id": 12, "ok": True, "side": "yes", "market_player": "Anastasia Potapova",
+                         "match": "Anastasia Potapova vs Diana Shnaider", "backed": "Anastasia Potapova",
+                         "closing_price": 0.475, "entry_price": 0.46, "sharp_close": 0.4649,
+                         "sharp_source": "pinnacle"})
+    assert "Anastasia Potapova vs Diana Shnaider" in full
+    assert "backed Anastasia Potapova to win (bought YES on A. Potapova)" in full
+
+    # A caller that predates the matchup fields must still render, not raise.
+    bare = format_close({"opp_id": 9, "ok": True, "side": "no", "market_player": "Leylah Fernandez",
+                         "closing_price": 0.52, "entry_price": 0.50, "sharp_close": None})
+    assert "Leylah Fernandez NO" in bare and "CLV +2¢" in bare
+
+
+def test_short_form_is_abandoned_when_two_players_would_render_identically():
+    """Xinyu Wang vs Xiyu Wang is a real fixture, and both shorten to 'X. Wang'. Two identical labels
+    in one message invite exactly the wrong-player confusion the short form is meant to prevent, so the
+    abbreviation is dropped for full names. That pair caused a live wrong-player bug in this repo."""
+    from matador.alerts import format_auto_result
+    out = format_auto_result({"opp_id": 30, "action": "recorded", "result": "win", "pnl": 9.0,
+                              "fill": 0.50, "contracts": 20, "market_player": "Xinyu Wang",
+                              "opponent": "Xiyu Wang", "match": "Xinyu Wang vs Xiyu Wang",
+                              "backed": "Xiyu Wang", "side": "no"})
+    assert "bought NO on Xinyu Wang" in out          # full name, not the colliding "X. Wang"
+    assert "X. Wang" not in out
+    # A normal pairing still abbreviates.
+    ok = format_auto_result({"opp_id": 31, "action": "recorded", "result": "win", "pnl": 9.0,
+                             "fill": 0.50, "contracts": 20, "market_player": "Taylor Fritz",
+                             "opponent": "Kamil Majchrzak", "match": "Taylor Fritz vs Kamil Majchrzak",
+                             "backed": "Kamil Majchrzak", "side": "no"})
+    assert "bought NO on T. Fritz" in ok
+
+
+def test_display_name_follows_the_broadcast_convention():
+    from matador.names import display_name
+    assert display_name("Taylor Fritz") == "T. Fritz"
+    assert display_name("Jesper De Jong") == "J. De Jong"                 # particle kept
+    assert display_name("Juan Carlos Prado Angelo") == "J. Prado Angelo"  # 4 tokens -> last two
+    assert display_name("Botic Van De Zandschulp") == "B. Van De Zandschulp"
+    assert display_name("Alejandro Davidovich Fokina") == "A. Davidovich Fokina"
+    assert display_name("Francisco Cerundolo") == "F. Cerundolo"          # sibling pair stays distinct
+    assert display_name("Juan Manuel Cerundolo") == "J. Manuel Cerundolo"
+    assert display_name("Sinner") == "Sinner" and display_name("") == ""  # degenerate inputs

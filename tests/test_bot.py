@@ -1496,3 +1496,26 @@ def test_scalar_payoff_is_inverted_for_a_no_position():
         assert a["action"] == "recorded" and a["result"] == "void"
         assert a["payoff"] == pytest.approx(expected), f"side={side}"
         conn.close()
+
+
+def test_matchup_fields_reach_the_dm_payload_and_invert_on_a_no_bet():
+    """bot._matchup must derive the backed player from engine's single definition, so a 'no' position
+    reports the OPPONENT -- the same rule the dedup key uses. Re-deriving it locally is what produced
+    the 2026-07-29 double-log."""
+    from matador.bot import _matchup, auto_record_result
+    conn = _db()
+    yes_id = _settleable_opp(conn, side="yes")
+    no_id = _settleable_opp(conn, side="no")
+
+    from matador.storage import get_opportunity
+    assert _matchup(get_opportunity(conn, yes_id)) == {
+        "match": "Player Aaa vs Player Bbb", "backed": "Player Aaa", "opponent": "Player Bbb"}
+    assert _matchup(get_opportunity(conn, no_id)) == {
+        "match": "Player Aaa vs Player Bbb", "backed": "Player Bbb",  # inverted
+        "opponent": "Player Bbb"}
+
+    with make_settled_client(result="yes") as client:
+        a = auto_record_result(client, conn, no_id, make_cfg())
+    assert a["match"] == "Player Aaa vs Player Bbb" and a["backed"] == "Player Bbb"
+    assert a["result"] == "loss"          # Aaa won, and we were on Bbb
+    conn.close()

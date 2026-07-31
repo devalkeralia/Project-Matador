@@ -8,7 +8,7 @@ places orders.
 
 ## Status
 
-**v1 is built end-to-end (Phases 1–7), review-hardened, and DEPLOYED — 352 tests passing, on `origin/main`.** An always-on bot
+**v1 is built end-to-end (Phases 1–7), review-hardened, and DEPLOYED — 360 tests passing, on `origin/main`.** An always-on bot
 (`matador/bot.py` + `scripts/bot.py`, `python-telegram-bot`) that long-polls Telegram and, on
 `/check`/`/scan`, runs the Phase-3 engine against live Kalshi (read-only) and replies with a
 formatted **VALUE ALERT** + ¼-Kelly stake — or a **self-explaining no-value breakdown** (prices,
@@ -41,7 +41,7 @@ remains is only the paper run itself:** accumulate 200+ sharp-referenced paper b
 and read the gate. Model still has **no demonstrated edge** — do not bet real money until the gate is MET.
 **v1 = pre-match value alerts only** (in-play mean-reversion pilot = v2).
 
-_Last updated: 2026-07-30_
+_Last updated: 2026-07-31_
 
 ## What this is
 
@@ -237,6 +237,39 @@ markets where the gate thresholds are meaningful.
      *measure first; don't build it pre-emptively.*
 
 ## Changelog
+
+- **2026-07-31 — per-bet DMs now say who played whom and who you were actually on; 360 tests.**
+  The `🧾` auto-record and `📌` closing-line messages named only the market's Yes subject, so reading one
+  meant scrolling back through the chat to find the opponent. They now render:
+
+  ```
+  Taylor Fritz vs Kamil Majchrzak · backed Kamil Majchrzak to win (bought NO on Taylor Fritz)
+  ```
+
+  Each part earns its place. Naming the opponent removes the scroll. **"to win"** removes a real
+  ambiguity: on a `no` bet the market's Yes subject is the player you bet *against*, so the original
+  `Taylor Fritz NO — WIN` read as though Fritz had won — and the first attempted fix,
+  `backed Kamil Majchrzak (NO)`, was no better, because a bare side letter next to a name reads as
+  negating *that* name. **Attaching YES/NO to `market_player`** puts the contract next to the player it
+  actually belongs to, which is the other player on a `no` bet — the source of the confusion.
+  The back-reference uses `names.display_name`, a broadcast-style short form — **initial + surname**,
+  with trailing particles absorbed: `T. Fritz`, `J. De Jong`, `J. Prado Angelo`. The initial is not
+  decoration; it separates same-surname players a betting message must not conflate (`J. Cerundolo` vs
+  `F. Cerundolo`). Where it *can't* — `Xinyu Wang` and `Xiyu Wang` both shorten to `X. Wang`, a real
+  fixture and the pair behind a past wrong-player bug — the message drops the abbreviation for full
+  names rather than print two identical labels.
+
+  Deliberately **no** given-name exception list, though it would fix `T. Martin Etcheverry` → `Etcheverry`:
+  the 3-token class genuinely splits both ways in our data (`Bautista Agut` is a double *surname*,
+  `Juan Manuel Cerundolo` a double *given* name), and separating them needs ~90 hand-maintained entries
+  for a cosmetic string — where a half-complete list is worse than none. The initial makes it moot by
+  occupying the given-name slot. Known limitation, documented: surname-first names are wrong
+  (`Zheng Qinwen` → `Z. Qinwen`), the same monitored gap as the resolution path.
+
+  The backed side comes from `engine.backed_player_from`, now the single definition shared by these
+  messages and the dedup key — re-implementing that notion locally is what produced the 2026-07-29
+  double-log. Also drops a stale "retirement/anomaly" explanation from the unknown-settlement DM, which
+  `scalar` no longer reaches.
 
 - **2026-07-30 — `/result` is now fully automatic; a 4-agent review of it found 8 defects; 353 tests.**
   Outcomes record themselves from Kalshi's own settlement, so the ROI co-gate no longer depends on the

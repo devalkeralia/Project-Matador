@@ -8,7 +8,7 @@ this file is the index, not the record.
 | | |
 |---|---|
 | **Bot** | **DEPLOYED AND RUNNING** — DigitalOcean droplet `157.230.158.73` (SFO2, $6/mo) |
-| **Repo + droplet** | both at `e131417` on `origin/main`, **353 tests passing**, tree clean |
+| **Repo + droplet** | both at `e131417` on `origin/main`, **360 tests passing**, tree clean |
 | **Sample** | 15 opportunities / 15 distinct positions / 0 duplicates; **10 now have results** |
 | **Owner workload** | **none** — outcomes auto-record from Kalshi; `/result` is an override only |
 | **Model** | `p_model` FROZEN for the paper run. No demonstrated edge (`w*` = 0.00 vs the sharp close) |

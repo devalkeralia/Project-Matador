@@ -1,23 +1,53 @@
-# SESSION HANDOFF — 2026-07-28 → 2026-07-30
+# SESSION HANDOFF — 2026-07-28 → 2026-08-03
 
 Written so context can be cleared without losing anything. Durable homes for each topic are noted;
 this file is the index, not the record.
 
-## TL;DR state (as of 2026-07-30 21:15 UTC)
+## TL;DR state (as of 2026-08-03 20:30 UTC)
 
 | | |
 |---|---|
 | **Bot** | **DEPLOYED AND RUNNING** — DigitalOcean droplet `157.230.158.73` (SFO2, $6/mo) |
-| **Repo + droplet** | both at `e131417` on `origin/main`, **360 tests passing**, tree clean |
-| **Sample** | 15 opportunities / 15 distinct positions / 0 duplicates; **10 now have results** |
+| **Repo** | **369 tests passing**; the 2026-08-03 work is UNCOMMITTED and NOT yet on the droplet (still `5ceffa9`) |
+| **Sample** | 40 opportunities / 40 distinct positions / 0 duplicates; **25 have results** (11W/13L/1 void) |
+| **Gate** | n_sharp=19, mean sharp CLV +1.11pp, CI (−1.58, +1.26), 2 ISO weeks → `go_live=False`, as expected at week 2 |
 | **Owner workload** | **none** — outcomes auto-record from Kalshi; `/result` is an override only |
 | **Model** | `p_model` FROZEN for the paper run. No demonstrated edge (`w*` = 0.00 vs the sharp close) |
-| **Next real event** | **Monday 06:00 UTC** — refresh cron fires, DMs its outcome, and now attaches `matador.db` |
+| **Watch item** | the ATP feed did NOT advance this week (199,368 matches, latest `20260726`); next Monday tells lag from freeze |
 
 **Nothing is left to build.** The run is accumulating; read the gate ONCE at ≥200 sharp-referenced bets
 across ≥12 ISO weeks, per the pre-registered protocol in DESIGN-DECISIONS.
 
-## The 2026-07-30 session (most recent)
+## The 2026-08-03 session (most recent)
+
+Reading the first weekly offsite found **19 of 40 captures lost**, all to ONE field: Kalshi's
+`occurrence_datetime` is a coarse **session placeholder** (52 markets measured live, all 52 start times
+wrong; up to 13 sharing a stamp; some two days stale), so captures fire hours early or late. Fixed by
+taking the start from the sharp feed's `commence_time` — at entry and again at fire time — off the fetch
+`sharp_entry` already pays for. Rationale + accepted limits: DESIGN-DECISIONS, "Match start time".
+
+**The finding this started from was corrected mid-session, and that matters more than the fix.** The 12
+`missed:late` rows were first read as *bets placed in-play*, and the next step was to exclude them from
+the live sample. That reading came from the Kalshi stamp — the field now discredited. Re-tested against
+real starts: **5 of 12 provably still pre-match, 0 confirmed post-start**, so nothing was excluded
+(excluding them would have *improved* the ROI co-gate by dropping 5 losing rows). An in-play **detector**
+ships instead of a gate; see [[post-start-alerts-defect]] and the DESIGN-DECISIONS correction.
+
+Also: the **VALUE ALERT and closing-line DMs** now say who you are backing (`Back Caty McNally to win →
+buy NO on "T. Maria wins"`), completing the 2026-07-31 wording change. The closing-line case was a
+plumbing bug — `capture_close` omitted the matchup fields on its *common* path only.
+
+## The 2026-07-31 session
+
+**Per-bet DMs now name both players and the side you actually backed** (`408f8c7`, docs `5ceffa9`) —
+`Taylor Fritz vs Kamil Majchrzak · backed Kamil Majchrzak to win (bought NO on T. Fritz)`. The short
+form is `names.display_name`; the backed side comes from the shared `engine.backed_player_from`, so
+the DMs and the dedup key keep ONE definition of "which player does this position back". Known
+limitation: surname-first names shorten wrong (`Zheng Qinwen` → `Z. Qinwen`) — the same monitored gap
+as the resolution path, and `display_name` is display-only, never an identifier. Rationale (incl. why
+the ~90-entry given-name exception list was rejected) is in the README changelog.
+
+## The 2026-07-30 session
 
 1. **Improvements batch — 9 of 11 do-now items applied**, in deadline order (`IMPROVEMENTS.md` marks
    each with what was actually built). Headlines: **sharp probability at ENTRY** now logged (the only

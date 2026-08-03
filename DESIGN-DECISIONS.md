@@ -588,6 +588,43 @@ contract count, which is exactly what a log-only paper bet transacted at. Conseq
   ZERO recorded results or fills**, so there is no mixed methodology to reconcile.
 - Every auto-record is DM'd so a wrong one is correctable immediately rather than at week 12.
 
+## Match start time = the SHARP feed's, not Kalshi's (2026-08-03)
+
+**Kalshi's `occurrence_datetime` is a session placeholder, not a per-match start.** Measured live on
+2026-08-03 against the open Canadian Open books: **52 Kalshi markets matched to a sharp event, and all
+52 start times disagreed.** Kalshi resolved to 3–7 distinct stamps per tour with as many as **13 matches
+sharing one**, and left markets `open` carrying stamps **two days in the past**; the-odds-api's
+`commence_time` gave 12–15 distinct minute-precise times for the same matches (17:03, 19:37, 21:50).
+Kalshi's own market rules make this deliberate, not a bug: *"If this match is postponed or delayed, the
+market will remain open and close after the rescheduled match has finished (within two weeks)."*
+
+**This one field cost 19 of the first 40 closing-line captures** — 12 refused as `late` (the stamp had
+passed although the match had not started) and 6 as `finalized` (the stamp was hours *after* the real
+match, so the capture fired once it was over and settled). A lost capture is not a poisoned datapoint —
+`capture_close` fails closed by design — but it drops the row from **both** CLV tracks, including the
+binding sharp one, which is why capture health is a co-gate at all.
+
+**Decision: the sharp `commence_time` is authoritative wherever it exists**, Kalshi's stamp is the
+fallback, and no listing leaves the stored value untouched (never blanked). Applied at entry
+(`_sharp_entry_job` → `update_occurrence` → `rearm_captures`) and re-checked at fire time
+(`auto_capture`), both off the fetch `sharp_entry` already pays for. Accepted limits: the sharp feed is
+itself coarse for matches more than a day out (a 13-way shared stamp was observed), which the fire-time
+re-check refines; `/check`-logged rows get only the fire-time correction; and outside covered
+tournaments there is no sharp reference at all, so those rows keep Kalshi's stamp and its failure modes.
+
+**Correction to the finding that prompted this (recorded because it changed the conclusion).** The 12
+`late` rows were first read as *bets placed in-play* — a selection-rule violation, since v1 is
+pre-match-only — and that reading came within one step of excluding them from the live sample. It was
+inferred from Kalshi's stamp, i.e. the very field this section discredits. Re-tested against real
+starts: **5 of the 12 were provably still pre-match when alerted** (their sharp start lay hours to days
+later), 7 are unresolvable (the event is delisted once it is over, and the-odds-api sells no free
+history), and **none were confirmed post-start.** So **the 12 stay in the sample, unmarked** — a lost
+capture already keeps them out of every CLV figure, and excluding them would have *improved* the ROI
+co-gate by dropping 5 losing results on a criterion now known to be unreliable. What ships instead is a
+**detector**: any alert whose real start precedes its own timestamp is logged and DM'd
+("already under way — don't trade it"). Measure the rate first; a hard pre-log abstain is a decision for
+after there is a rate to look at, not before.
+
 ## Week-12 read protocol — PRE-REGISTERED 2026-07-29, before the sample matured
 
 Written **deliberately in advance**, while the sample stood at 11 bets, because every rule below is

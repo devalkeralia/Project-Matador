@@ -238,6 +238,38 @@ markets where the gate thresholds are meaningful.
 
 ## Changelog
 
+- **2026-08-03 — the closing-line capture now runs off the SHARP feed's real start time, not Kalshi's
+  session placeholder; 369 tests.** Reading the first weekly offsite showed 19 of the first 40 captures
+  lost: 12 refused as `missed:late` and 6 as `missed:finalized`. Both classes trace to ONE field.
+  Kalshi's `occurrence_datetime` is a coarse **session** stamp shared across a whole slate and left days
+  stale, not a per-match start — measured live over the open Canadian Open books, **52 matched markets,
+  all 52 start times disagreed**, Kalshi resolving to 3–7 distinct stamps per tour (up to 13 matches on
+  one) against 12–15 minute-precise sharp stamps. Scheduling a capture off it fires hours early (the
+  match is over and settled → `finalized`) or hours late (past a stamp that already passed → `late`).
+
+  The-odds-api events already carry `commence_time`, the real per-match start, and we already fetch
+  them for `sharp_entry` — so `sharp_commence_time` / `sharp_start_for_opp` take the start off the same
+  credit. It is applied at **entry** (correct the stamp, then `rearm_captures` moves the timer, since
+  `schedule_pending_captures` skips a row that already has one) and again at **fire time** in
+  `auto_capture`, which prefers it over Kalshi's and re-arms through the existing postponement path.
+  No sharp listing → the stored stamp is left alone; nothing is ever blanked.
+
+  It also corrected the finding that prompted it. The 12 rows had been read as "logged after their own
+  start", i.e. bet in-play — but that used the very field now known to be unreliable. Re-tested against
+  real starts, **5 of the 12 were provably still PRE-match when alerted** (their sharp start is hours or
+  days later), 7 are unresolvable (delisted), and **none confirmed post-start**. So they are not
+  excluded from the sample: a lost capture already keeps a row out of both CLV tracks. What ships instead
+  is a **detector** — an alert whose real start precedes its own timestamp is logged and DM'd as
+  "already under way, don't trade it" — measuring the in-play rate before anyone writes a rule against it.
+
+- **2026-08-03 — the VALUE ALERT and closing-line DMs say who you're backing.** Both carried the
+  `2026-07-31` defect below in the one place it matters most, the alert itself: `BUY NO "Tatjana Maria
+  wins"` names only the player you are betting *against*. They now read
+  `Tatjana Maria vs Caty McNally · pre-match` / `Back Caty McNally to win → buy NO on "T. Maria wins" @ 55¢`,
+  the same wording as the per-bet DMs. The closing-line message was a plumbing bug rather than wording:
+  `capture_close` supplied the matchup fields on its already-captured and sharp-only paths but **not on
+  the common one**, so a normal capture silently rendered the bare `Tatjana Maria NO` fallback.
+
 - **2026-07-31 — per-bet DMs now say who played whom and who you were actually on; 360 tests.**
   The `🧾` auto-record and `📌` closing-line messages named only the market's Yes subject, so reading one
   meant scrolling back through the chat to find the opponent. They now render:

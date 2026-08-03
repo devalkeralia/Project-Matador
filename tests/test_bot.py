@@ -10,6 +10,7 @@ from matador.bot import (
     CAPTURE_LATE_GRACE,
     RESCHEDULE_EPSILON,
     auto_capture,
+    rearm_captures,
     build_application,
     capture_close,
     is_authorized,
@@ -144,7 +145,7 @@ def test_run_check_alerts_and_logs_a_row():
     conn = _db()
     with make_client() as client:
         out = run_check(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg(), conn, "atp", "Aaa", "Bbb")
-    assert 'BUY YES "Player Aaa wins"' in out and "opp #1" in out
+    assert 'Back Player Aaa to win → buy YES on "P. Aaa wins"' in out and "opp #1" in out
     assert "/notes" in out  # footnote pointing to the how-to-read guide
     assert len(recent_opportunities(conn, 10)) == 1
     conn.close()
@@ -314,7 +315,7 @@ def test_run_check_dry_renders_the_alert_but_logs_nothing():
     model, cfg = OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg()
     with make_client() as client:
         out = run_check(client, model, cfg, conn, "atp", "Aaa", "Bbb", dry=True)
-    assert 'BUY YES "Player Aaa wins"' in out      # the full alert still renders
+    assert 'buy YES on "P. Aaa wins"' in out      # the full alert still renders
     assert "PREVIEW" in out and "NOT logged" in out
     assert "opp #" not in out                       # no fake row id
     assert recent_opportunities(conn, 10) == []     # THE POINT: nothing written
@@ -388,7 +389,7 @@ def test_scan_status_line_distinguishes_ok_failed_and_never_ran():
 def test_scheduled_scan_stamps_bot_data_on_success_and_on_failure(tmp_path, monkeypatch):
     """The except path must stamp too -- an unstamped failure is invisible, which is the whole bug."""
     app = _app_for_job(tmp_path, scan_interval_hours=8.0)
-    monkeypatch.setattr("matador.bot._sharp_entry_job", lambda cfg, ids: 0)
+    monkeypatch.setattr("matador.bot._sharp_entry_job", lambda cfg, ids: {"filled": 0, "restamped": [], "in_play": []})
     monkeypatch.setattr("matador.bot._scheduled_scan_job", lambda *a: ("alert\nopp #1", [1]))
     asyncio.run(scheduled_scan_job(_FakeJobContext(app)))
     assert app.bot_data["scan"]["ok"] is True and app.bot_data["scan"]["n_new"] == 1
@@ -540,7 +541,7 @@ def test_run_scan_alerts_tallies_and_dedups():
     with make_client() as client:
         out1 = run_scan(client, model, cfg, conn, ["atp"])
         run_scan(client, model, cfg, conn, ["atp"])          # second sweep dedups
-    assert 'BUY YES "Player Aaa wins"' in out1 and "1 alert(s)" in out1
+    assert 'buy YES on "P. Aaa wins"' in out1 and "1 alert(s)" in out1
     assert len(recent_opportunities(conn, 10)) == 1
     conn.close()
 
@@ -549,7 +550,7 @@ def test_run_scan_includes_outright_final():
     conn = _db()
     with make_slam_client() as client:  # no H2H markets; a Grand Slam final only in the outright series
         out = run_scan(client, OrientedModel("Player Aaa", "Player Bbb", 0.60), make_cfg(), conn, ["atp"])
-    assert 'BUY YES "Player Aaa wins"' in out and "1 alert(s)" in out
+    assert 'buy YES on "P. Aaa wins"' in out and "1 alert(s)" in out
     assert len(recent_opportunities(conn, 10)) == 1
     conn.close()
 
@@ -702,9 +703,10 @@ def test_capture_close_fail_closed_on_unknown_start_and_pre_escape():
     conn2.close()
 
 
-def make_sharp_client(price_a=1.5, price_b=2.6, status=200):
-    """Mock the-odds-api returning a Wimbledon Player Aaa vs Player Bbb h2h with a pinnacle price."""
-    ev = [{"home_team": "Player Aaa", "away_team": "Player Bbb", "commence_time": "2099-01-01T00:00:00Z",
+def make_sharp_client(price_a=1.5, price_b=2.6, status=200, commence="2099-01-01T00:00:00Z"):
+    """Mock the-odds-api returning a Wimbledon Player Aaa vs Player Bbb h2h with a pinnacle price.
+    `commence` is the sharp book's REAL match start -- what corrects Kalshi's session placeholder."""
+    ev = [{"home_team": "Player Aaa", "away_team": "Player Bbb", "commence_time": commence,
            "bookmakers": [{"key": "pinnacle", "markets": [{"key": "h2h", "outcomes": [
                {"name": "Player Aaa", "price": price_a}, {"name": "Player Bbb", "price": price_b}]}]}]}]
     body = ev if status == 200 else {}
@@ -1073,7 +1075,7 @@ def test_sharp_entry_job_fills_the_entry_columns(tmp_path, monkeypatch):
     oid = _capture_opp_sharp(conn)
     conn.close()
     monkeypatch.setattr("matador.bot._sharp_client", lambda c: make_sharp_client())
-    assert _sharp_entry_job(cfg, [oid]) == 1
+    assert _sharp_entry_job(cfg, [oid])["filled"] == 1
     conn = connect(cfg.db_path)
     row = conn.execute("SELECT sharp_entry, sharp_entry_source FROM opportunities WHERE id=?", (oid,)).fetchone()
     # 1.5 / 2.6 devigged -> the Yes side (Player Aaa) is the favorite, so entry prob is well above half.
@@ -1089,7 +1091,7 @@ def test_sharp_entry_job_is_a_noop_without_a_sharp_client(tmp_path, monkeypatch)
     oid = _capture_opp_sharp(conn)
     conn.close()
     monkeypatch.setattr("matador.bot._sharp_client", lambda c: None)
-    assert _sharp_entry_job(cfg, [oid]) == 0
+    assert _sharp_entry_job(cfg, [oid])["filled"] == 0
     conn = connect(cfg.db_path)
     assert conn.execute("SELECT sharp_entry FROM opportunities WHERE id=?", (oid,)).fetchone()["sharp_entry"] is None
     conn.close()
@@ -1103,8 +1105,8 @@ def test_sharp_entry_job_never_raises_and_returns_zero(tmp_path, monkeypatch):
     def boom(c):
         raise RuntimeError("odds api exploded")
     monkeypatch.setattr("matador.bot._sharp_client", boom)
-    assert _sharp_entry_job(cfg, [oid]) == 0          # swallowed: instrumentation can't take down a cycle
-    assert _sharp_entry_job(cfg, []) == 0             # nothing logged this cycle -> no client built at all
+    assert _sharp_entry_job(cfg, [oid])["filled"] == 0   # swallowed: instrumentation can't take down a cycle
+    assert _sharp_entry_job(cfg, [])["filled"] == 0      # nothing logged this cycle -> no client built at all
 
 
 def test_scheduled_scan_dms_before_and_despite_the_sharp_entry_fill(tmp_path, monkeypatch):
@@ -1519,3 +1521,120 @@ def test_matchup_fields_reach_the_dm_payload_and_invert_on_a_no_bet():
     assert a["match"] == "Player Aaa vs Player Bbb" and a["backed"] == "Player Bbb"
     assert a["result"] == "loss"          # Aaa won, and we were on Bbb
     conn.close()
+
+
+# ---- the sharp feed is the start-time source of truth (Kalshi's stamp is a session placeholder) ----
+
+def test_sharp_entry_job_restamps_the_start_from_the_sharp_feed(tmp_path, monkeypatch):
+    """Kalshi's stamp is a coarse session time, often days stale; the sharp book has the real one.
+    Correcting it AT ENTRY is what puts the closing-line capture on the right timer -- the defect
+    that cost 19 of the first 40 captures."""
+    cfg, conn = _entry_cfg(tmp_path)
+    oid = _capture_opp_sharp(conn, occurrence="2026-08-01T17:00:00Z")   # Kalshi's stale session stamp
+    conn.close()
+    monkeypatch.setattr("matador.bot._sharp_client", lambda c: make_sharp_client(commence="2099-01-01T00:00:00Z"))
+    res = _sharp_entry_job(cfg, [oid])
+    assert res["restamped"] == [oid] and res["in_play"] == []
+    conn = connect(cfg.db_path)
+    row = conn.execute("SELECT occurrence_datetime FROM opportunities WHERE id=?", (oid,)).fetchone()
+    assert row["occurrence_datetime"] == "2099-01-01T00:00:00Z"
+    conn.close()
+
+
+def test_sharp_entry_job_flags_an_alert_that_fired_after_the_real_start(tmp_path, monkeypatch):
+    """Detection, not a gate: the row stays in the sample, but the owner is told not to trade it."""
+    cfg, conn = _entry_cfg(tmp_path)
+    oid = insert_opportunity(conn, ts="2026-08-01T20:00:00+00:00", tour="ATP", event="Wimbledon Men Singles",
+                             market_ticker="M", market_player="Player Aaa", opponent="Player Bbb", side="yes",
+                             price=0.50, p_model=0.6, net_edge=0.08, trigger_reason="prematch_value",
+                             occurrence_datetime="2026-08-01T22:00:00Z")   # Kalshi says the match is still ahead
+    conn.close()
+    # ...the sharp book says it started three hours before we alerted
+    monkeypatch.setattr("matador.bot._sharp_client", lambda c: make_sharp_client(commence="2026-08-01T17:00:00Z"))
+    assert _sharp_entry_job(cfg, [oid])["in_play"] == [oid]
+
+
+def test_sharp_entry_job_keeps_the_stored_start_when_the_match_is_not_listed(tmp_path, monkeypatch):
+    """No sharp event (over, unmapped, out of coverage) must LEAVE the stamp alone, never blank it."""
+    cfg, conn = _entry_cfg(tmp_path)
+    oid = _capture_opp_sharp(conn, occurrence="2026-08-01T17:00:00Z")
+    conn.close()
+    monkeypatch.setattr("matador.bot._sharp_client", lambda c: make_sharp_client(status=404))
+    res = _sharp_entry_job(cfg, [oid])
+    assert res["restamped"] == [] and res["in_play"] == []
+    conn = connect(cfg.db_path)
+    assert conn.execute("SELECT occurrence_datetime FROM opportunities WHERE id=?",
+                        (oid,)).fetchone()["occurrence_datetime"] == "2026-08-01T17:00:00Z"
+    conn.close()
+
+
+def test_auto_capture_prefers_the_sharp_start_over_kalshis():
+    """At fire time the sharp start wins: Kalshi's says capture NOW, the sharp book says the match
+    is still hours away -- capturing on Kalshi's would snapshot a price that is not the close."""
+    conn = _db()
+    soon = _soon()
+    oid = _capture_opp_sharp(conn, occurrence=soon)
+    with make_reconcile_client(occurrence=soon) as client, make_sharp_client(commence="2099-01-01T00:00:00Z") as sharp:
+        res = auto_capture(client, conn, oid, sharp_client=sharp)
+    assert res["action"] == "rescheduled" and res["new_start"] == "2099-01-01T00:00:00Z"
+    row = conn.execute("SELECT occurrence_datetime FROM opportunities WHERE id=?", (oid,)).fetchone()
+    assert row["occurrence_datetime"] == "2099-01-01T00:00:00Z"
+    assert conn.execute("SELECT count(*) FROM outcomes WHERE opp_id=?", (oid,)).fetchone()[0] == 0
+    conn.close()
+
+
+def test_rearm_captures_replaces_a_timer_whose_start_moved(tmp_path):
+    """schedule_pending_captures skips a row that already has a job, so a corrected start would keep
+    firing on the stale timer. rearm_captures cancels first."""
+    dbp = str(tmp_path / "m.db")
+    conn = connect(dbp)
+    init_db(conn)
+    insert_opportunity(conn, ts="t", tour="ATP", market_ticker="T-A", side="yes", price=0.5, p_model=0.6,
+                       net_edge=0.08, trigger_reason="prematch_value", occurrence_datetime="2099-01-01T00:00:00Z")
+    app = build_application("1:x", make_cfg(db_path=dbp), object(), chat_id=42)
+    assert schedule_pending_captures(app) == 1
+    conn.execute("UPDATE opportunities SET occurrence_datetime = '2099-06-01T00:00:00Z' WHERE id = 1")
+    conn.commit()
+    conn.close()
+    assert schedule_pending_captures(app) == 0        # the defect: already-armed rows are skipped
+    assert rearm_captures(app, [1]) == 1              # cancelled, then re-armed on the corrected start
+    assert len(app.job_queue.get_jobs_by_name("close:1")) == 1   # exactly one timer, not two
+    assert rearm_captures(app, []) == 0               # nothing moved -> no work
+
+
+def test_captured_closing_line_dm_names_the_matchup_and_the_backed_player():
+    """The COMMON capture path (a Kalshi mid) must carry the matchup fields, or format_close falls
+    back to the bare '{market_player} {SIDE}' -- which on a 'no' bet names the player we bet AGAINST."""
+    conn = _db()
+    oid = insert_opportunity(conn, ts="t", tour="ATP", event="Wimbledon Men Singles", market_ticker="M",
+                             market_player="Player Aaa", opponent="Player Bbb", side="no", price=0.50,
+                             p_model=0.6, net_edge=0.08, trigger_reason="prematch_value", occurrence_datetime=_soon())
+    with make_capture_client() as client:
+        r = capture_close(client, conn, oid, source="auto")
+    conn.close()
+    from matador.alerts import format_close
+    assert r["ok"] and r["match"] == "Player Aaa vs Player Bbb" and r["backed"] == "Player Bbb"
+    assert 'backed Player Bbb to win (bought NO on P. Aaa)' in format_close(r)
+
+
+def test_auto_capture_spends_one_odds_credit_for_the_start_and_the_close():
+    """The start check and the sharp close must share ONE fetch; two would double the credit burn
+    on every captured row, and credit exhaustion is silent (sharp_close just goes NULL)."""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(200, json=[{"home_team": "Player Aaa", "away_team": "Player Bbb",
+                                          "commence_time": _soon(),
+                                          "bookmakers": [{"key": "pinnacle", "markets": [{"key": "h2h", "outcomes": [
+                                              {"name": "Player Aaa", "price": 1.5},
+                                              {"name": "Player Bbb", "price": 2.6}]}]}]}])
+    conn = _db()
+    soon = _soon()
+    oid = _capture_opp_sharp(conn, occurrence=soon)
+    sharp = SharpOddsClient("K", transport=httpx.MockTransport(handler))
+    with make_reconcile_client(occurrence=soon) as client, sharp:
+        res = auto_capture(client, conn, oid, sharp_client=sharp)
+    conn.close()
+    assert res["action"] == "captured" and res["result"]["sharp_close"] is not None
+    assert calls["n"] == 1

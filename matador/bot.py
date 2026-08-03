@@ -38,7 +38,7 @@ from matador.engine import (
     scan_outright_finals, scan_series,
 )
 from matador.kalshi.client import KalshiClient
-from matador.sharp import SharpOddsClient, last_requests_remaining, sharp_fair_for_opp
+from matador.sharp import SharpOddsClient, last_requests_remaining, sharp_fair_for_opp, sharp_start_for_opp
 from matador.storage import (
     get_opportunity, last_opportunity, last_position, pending_captures, recent_opportunities, settled_bets,
 )
@@ -330,18 +330,21 @@ def capture_close(client, conn, opp_id: int, *, source: str, now: datetime | Non
         # Kalshi book too thin for a mid, but we have a sharp ref -> record sharp-only (row leaves pending).
         storage.record_outcome(conn, opp_id, closing_captured_at=now.isoformat(timespec="seconds"),
                                closing_source=f"sharp_only:{source}", sharp_close=sharp_close, sharp_source=sharp_source)
-        return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"], **_matchup(opp), **_matchup(opp),
+        return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"], **_matchup(opp),
                 "closing_price": None, "entry_price": opp["price"], "sharp_close": sharp_close, "sharp_source": sharp_source}
     storage.record_outcome(conn, opp_id, closing_price=mid, closing_captured_at=now.isoformat(timespec="seconds"),
                            closing_source=source, sharp_close=sharp_close, sharp_source=sharp_source)
-    return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"],
+    # _matchup here too: this is the COMMON path, and without it the closing-line DM degraded to the
+    # bare "{market_player} {SIDE}" fallback -- naming, on a 'no' bet, the player we bet AGAINST.
+    return {"opp_id": opp_id, "ok": True, "side": opp["side"], "market_player": opp["market_player"], **_matchup(opp),
             "closing_price": mid, "entry_price": opp["price"], "sharp_close": sharp_close, "sharp_source": sharp_source}
 
 
 def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None, sharp_client=None) -> dict:
-    """Scheduled-capture arbiter: the LIVE Kalshi market is the single source of truth for the
-    match start. When it differs materially from the stored time (a reschedule in EITHER direction),
-    correct the stored time first, then:
+    """Scheduled-capture arbiter: the best available start time is the source of truth -- the SHARP
+    book's per-match start when we can get it, else the LIVE Kalshi market's (Kalshi's is often a
+    coarse session placeholder; see sharp.sharp_commence_time). When it differs materially from the
+    stored time (a reschedule in EITHER direction), correct the stored time first, then:
       - if the corrected start is still in the FUTURE -> signal a reschedule (re-arm; do NOT capture),
         so a stale time can't false-'miss' a match that got pushed back;
       - if it's now in the PAST -> fall through to capture_close, which (against the CORRECTED time)
@@ -352,21 +355,32 @@ def auto_capture(client, conn, opp_id: int, *, now: datetime | None = None, shar
     All Kalshi contact lives here (not in schedule_pending_captures, which stays DB-only)."""
     opp = get_opportunity(conn, opp_id)
     now = now or datetime.now(timezone.utc)
+    # One odds-api fetch serves BOTH the start check here and the sharp close inside capture_close --
+    # without the shared cache this path would spend two credits per captured row instead of one.
+    sharp_cache: dict = {}
     if opp is not None:
         market = client.get_market(opp["market_ticker"])
         stored = _parse_dt(opp["occurrence_datetime"])
-        live = _parse_dt(market.occurrence_datetime)
+        # Prefer the SHARP start: it is the real per-match time, where Kalshi's is a session stamp
+        # that can sit hours early or days stale. None (not listed / not covered / over) -> Kalshi's.
+        live_iso = market.occurrence_datetime
+        if sharp_client is not None:
+            sharp_start = sharp_start_for_opp(sharp_client, opp, cache=sharp_cache)   # never raises
+            if sharp_start is not None:
+                live_iso = sharp_start
+        live = _parse_dt(live_iso)
         moved = (
             market.status in ("active", "open")
             and live is not None and stored is not None
             and abs((live - stored).total_seconds()) > RESCHEDULE_EPSILON.total_seconds()
         )
         if moved:
-            storage.update_occurrence(conn, opp_id, market.occurrence_datetime)  # correct EITHER direction
+            storage.update_occurrence(conn, opp_id, live_iso)  # correct EITHER direction
             if live > now:  # still snapshot-able pre-match -> re-arm for the new start, don't capture now
-                return {"action": "rescheduled", "opp_id": opp_id, "new_start": market.occurrence_datetime}
+                return {"action": "rescheduled", "opp_id": opp_id, "new_start": live_iso}
     return {"action": "captured",
-            "result": capture_close(client, conn, opp_id, source="auto", now=now, sharp_client=sharp_client)}
+            "result": capture_close(client, conn, opp_id, source="auto", now=now,
+                                    sharp_client=sharp_client, sharp_cache=sharp_cache)}
 
 
 def _matchup(opp) -> dict:
@@ -582,9 +596,21 @@ def _scheduled_scan_job(cfg, model, demo, tours) -> tuple[str, list[int]]:
         return _with_conn(cfg, work)
 
 
-def _sharp_entry_job(cfg, opp_ids: list[int]) -> int:
-    """Record the sharp fair prob AT ENTRY for the rows a scan cycle just logged. Returns how many
-    were filled.
+def _sharp_entry_job(cfg, opp_ids: list[int]) -> dict:
+    """Record the sharp fair prob AT ENTRY for the rows a scan cycle just logged, and correct their
+    start times from the same fetch. Returns {"filled", "restamped" (ids), "in_play" (ids)}.
+
+    The start-time correction is why this job now matters to the CLV sample and not just to its
+    decomposition. Kalshi's `occurrence_datetime` is a session placeholder (see
+    sharp.sharp_commence_time): scheduling the closing-line capture off it lost 19 of the first 40
+    captures -- 12 fired after a stamp that had already passed while the match had not started, 6
+    fired at a stamp hours AFTER the real match, by which time it had finished and settled. The
+    sharp feed carries the real per-match start, and we are already fetching it here.
+
+    `in_play` is a DETECTION, not a gate: a row whose real start precedes its own alert timestamp
+    was priced by a pre-match-only model against a market already under way. Nothing is auto-excluded
+    on it -- it is reported so the owner doesn't trade it, and so the rate can be measured before
+    anyone writes a rule against a sample of one.
 
     Runs strictly POST-decision -- after the alerts are logged and the DM is sent -- because it is
     instrumentation, not input: it must never delay an alert, and must never be able to suppress one.
@@ -597,17 +623,16 @@ def _sharp_entry_job(cfg, opp_ids: list[int]) -> int:
     a few cents under Pinnacle on the favorites min_price forces us to buy -- a standing venue basis
     that looks identical to forecasting skill. See storage.set_sharp_entry.
     """
+    out: dict = {"filled": 0, "restamped": [], "in_play": []}
     if not opp_ids:
-        return 0
+        return out
     try:
         client = _sharp_client(cfg)
         if client is None:
-            return 0
+            return out
         cache: dict = {}
-        filled = 0
         with client:
             def work(conn):
-                nonlocal filled
                 for opp_id in opp_ids:
                     row = get_opportunity(conn, opp_id)
                     if row is None:
@@ -615,12 +640,23 @@ def _sharp_entry_job(cfg, opp_ids: list[int]) -> int:
                     prob, source = sharp_fair_for_opp(client, row, cache=cache)
                     if prob is not None:
                         storage.set_sharp_entry(conn, opp_id, prob, source)
-                        filled += 1
+                        out["filled"] += 1
+                    start_iso = sharp_start_for_opp(client, row, cache=cache)
+                    start = _parse_dt(start_iso)
+                    if start is None:
+                        continue  # not listed -> keep Kalshi's stamp; auto_capture re-checks at fire time
+                    stored = _parse_dt(row["occurrence_datetime"])
+                    if stored is None or abs((start - stored).total_seconds()) > RESCHEDULE_EPSILON.total_seconds():
+                        storage.update_occurrence(conn, opp_id, start_iso)
+                        out["restamped"].append(opp_id)
+                    logged_at = _parse_dt(row["ts"])
+                    if logged_at is not None and start < logged_at:
+                        out["in_play"].append(opp_id)
             _with_conn(cfg, work)
-        return filled
+        return out
     except Exception:
         log.warning("sharp-at-entry fill failed for %s", opp_ids, exc_info=True)
-        return 0
+        return out
 
 
 def _recent_job(cfg, n) -> str:
@@ -811,6 +847,22 @@ def schedule_pending_captures(application: Application) -> int:
     return scheduled
 
 
+def rearm_captures(application: Application, opp_ids) -> int:
+    """Re-schedule the closing-line capture for rows whose stored start just MOVED. Returns the
+    count re-armed.
+
+    schedule_pending_captures alone cannot do this: it skips any row that already has a `close:{id}`
+    job, so a corrected start would keep firing on the stale timer -- which is the whole defect the
+    sharp start-time lookup exists to fix. Cancel first, then let the normal scheduler re-arm."""
+    jq = application.job_queue
+    if jq is None or not opp_ids:
+        return 0
+    for opp_id in opp_ids:
+        for job in jq.get_jobs_by_name(f"close:{opp_id}"):
+            job.schedule_removal()
+    return schedule_pending_captures(application)
+
+
 async def capture_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """One-shot job: reconcile against the live market, then either capture the closing line or
     (if the match was postponed) re-arm for the corrected start. Confirms to the owner chat.
@@ -870,8 +922,17 @@ async def scheduled_scan_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             await context.bot.send_message(chat_id=bd["chat_id"], text=chunk)
     # AFTER the DM: instrumentation must not sit between an edge and the owner seeing it.
     if new_ids:
-        filled = await asyncio.to_thread(_sharp_entry_job, cfg, new_ids)
-        log.info("sharp-at-entry: filled %d/%d new opp(s)", filled, n_new)
+        res = await asyncio.to_thread(_sharp_entry_job, cfg, new_ids)
+        log.info("sharp-at-entry: filled %d/%d new opp(s); %d start time(s) corrected from the sharp feed",
+                 res["filled"], n_new, len(res["restamped"]))
+        rearm_captures(context.application, res["restamped"])  # the capture must follow the corrected start
+        if res["in_play"]:
+            ids = ", ".join(f"#{i}" for i in res["in_play"])
+            log.warning("alerted on %s AFTER the real match start (sharp feed)", ids)
+            await context.bot.send_message(chat_id=bd["chat_id"], text=(
+                f"⚠️ Opp {ids}: the sharp book says that match was ALREADY UNDER WAY when the alert "
+                f"fired (Kalshi keeps tennis markets open in-play). Don't trade it — the model prices "
+                f"pre-match only, and the live price knows things it doesn't."))
 
 
 def _auto_result_job(cfg, demo) -> list[dict]:

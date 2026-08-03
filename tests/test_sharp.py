@@ -3,7 +3,10 @@ import httpx
 import pytest
 
 from matador.backtest import devig_shin
-from matador.sharp import SharpOddsClient, sharp_fair_for_opp, sharp_fair_prob, sport_key
+from matador.sharp import (
+    SharpOddsClient, sharp_commence_time, sharp_fair_for_opp, sharp_fair_prob,
+    sharp_start_for_opp, sport_key,
+)
 
 
 def _book(key, a_name, a_price, b_name, b_price):
@@ -159,3 +162,36 @@ def test_sharp_fair_for_opp_negative_caches_fetch_failure():
         assert sharp_fair_for_opp(c, _opp_row(), cache=cache) == (None, None)
         assert sharp_fair_for_opp(c, _opp_row(), cache=cache) == (None, None)   # served from the negative cache
     assert calls["n"] == 1   # the failing sport_key is fetched ONCE, not re-run per row
+
+
+# ---- sharp_commence_time / sharp_start_for_opp: the REAL per-match start ----
+
+def test_sharp_commence_time_returns_the_real_start_and_none_when_unlisted():
+    assert sharp_commence_time(EV, "Jannik Sinner", "Alexander Zverev") == "2026-08-15T18:00:00Z"
+    assert sharp_commence_time(EV, "Jannik Sinner", "Novak Djokovic") is None      # not this pair
+    assert sharp_commence_time([], "Jannik Sinner", "Alexander Zverev") is None    # nothing listed
+    # an unparseable stamp is no better than none -- it must never reach update_occurrence
+    bad = [_event("Jannik Sinner", "Alexander Zverev", [PINN], commence="not-a-date")]
+    assert sharp_commence_time(bad, "Jannik Sinner", "Alexander Zverev") is None
+
+
+def test_sharp_start_for_opp_shares_one_fetch_with_the_fair_prob_lookup():
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return httpx.Response(200, json=EV)
+
+    with _client(handler) as c:
+        cache = {}
+        p, _ = sharp_fair_for_opp(c, _opp_row(), cache=cache)
+        start = sharp_start_for_opp(c, _opp_row(), cache=cache)
+    assert p is not None and start == "2026-08-15T18:00:00Z"
+    assert calls["n"] == 1     # both answers off ONE credit -- the reason the start lookup is affordable
+
+
+def test_sharp_start_for_opp_never_raises_and_skips_uncovered():
+    with _client(lambda r: httpx.Response(500, json={})) as c:
+        assert sharp_start_for_opp(c, _opp_row()) is None            # a 5xx leaves the stored start alone
+    with _client(lambda r: (_ for _ in ()).throw(AssertionError("must not fetch"))) as c:
+        assert sharp_start_for_opp(c, _opp_row(event="Bastad")) is None

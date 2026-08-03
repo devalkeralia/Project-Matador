@@ -7,7 +7,7 @@ running event loop. PAPER alerts only -- these describe a suggested manual trade
 from __future__ import annotations
 
 from matador.clv import MIN_BETS
-from matador.engine import Opportunity
+from matador.engine import Opportunity, backed_player
 from matador.names import display_name
 
 
@@ -21,13 +21,21 @@ def format_alert(opp: Opportunity, opp_id: int | None, bankroll: float) -> str:
     can never be mistaken for a row in the paper sample.
 
     `opp.liquidity` is order-book depth in CONTRACTS at the target ask; * price approximates the
-    dollar depth available. Buying No on a "{market_player} wins" market backs the opponent -- the
-    quoted player is always the market's Yes subject, whichever side has the edge.
+    dollar depth available.
+
+    Says WHO WE ARE BACKING before naming the contract, in the same wording as the per-bet DMs
+    (see _backed_line): 'BUY NO "Tatjana Maria wins"' alone reads as a bet against the only player
+    named, when it is a bet ON the opponent -- who the old template never mentioned at all. The
+    matchup keeps FULL names (one authoritative rendering per player); the contract keeps the short
+    form, since the ticker beside it is the identifier and the full name there was just noise.
     """
+    backed = backed_player(opp) or opp.market_player
+    matchup = f"{opp.market_player} vs {opp.opponent}" if opp.opponent else opp.match
     lines = [
         f"\U0001f3be VALUE ALERT — {opp.tour} · {opp.event}",
-        f"{opp.match} · pre-match",
-        f'BUY {opp.side.upper()} "{opp.market_player} wins" @ {_cents(opp.price)}'
+        f"{matchup} · pre-match",
+        f"Back {backed} to win → buy {opp.side.upper()} on "
+        f'"{display_name(opp.market_player, opp.opponent)} wins" @ {_cents(opp.price)}'
         f"  ({opp.market_ticker}, depth ~${opp.liquidity * opp.price:.0f})",
         f"Model {opp.p_model:.1%} | Market {_cents(opp.price)} | Net edge {opp.net_edge:+.1%} (after fee)",
         f"Stake ${opp.suggested_stake:.0f} → {opp.contracts} contracts "

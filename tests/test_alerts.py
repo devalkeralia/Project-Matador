@@ -24,8 +24,8 @@ def _opp(**overrides) -> Opportunity:
 def test_format_alert_renders_cents_percent_dollars_and_id():
     out = format_alert(_opp(), 1043, bankroll=2000.0)
     assert "🎾 VALUE ALERT — ATP · Wimbledon" in out
-    assert "Aaa vs Bbb · pre-match" in out
-    assert 'BUY YES "Player Aaa wins" @ 54¢' in out
+    assert "Player Aaa vs Player Bbb · pre-match" in out          # FULL names: who played whom
+    assert 'Back Player Aaa to win → buy YES on "P. Aaa wins" @ 54¢' in out
     assert "depth ~$54" in out                       # liquidity 100 contracts * 0.54
     assert "Model 60.0% | Market 54¢ | Net edge +4.3% (after fee)" in out
     assert "Stake $46 → 85 contracts" in out
@@ -38,9 +38,11 @@ def test_format_alert_omits_flag_line_unless_flagged():
     assert "⚠️ Large edge" in format_alert(_opp(flagged=True), 1, 2000.0)
 
 
-def test_format_alert_no_side_keeps_market_player_as_yes_subject():
-    # Buying No on a "Player Aaa wins" market backs the opponent; the quoted player is unchanged.
-    assert 'BUY NO "Player Aaa wins"' in format_alert(_opp(side="no"), 1, 2000.0)
+def test_format_alert_no_side_names_the_backed_player_not_the_contract_subject():
+    # A 'no' bet backs the OPPONENT while the contract stays the market's Yes subject -- the alert
+    # must say both, or it reads as a bet against the only player it names.
+    out = format_alert(_opp(side="no"), 1, 2000.0)
+    assert 'Back Player Bbb to win → buy NO on "P. Aaa wins"' in out
 
 
 # ---- format_abstain ----
@@ -169,8 +171,8 @@ def test_format_scan_no_alerts_shows_tally():
 def test_format_scan_renders_alert_blocks_and_tally():
     alerts = [(_opp(), 1), (_opp(market_ticker="T-B", side="no"), 2)]
     out = format_scan(alerts, {"no_edge": 5}, bankroll=2000.0)
-    assert 'BUY YES "Player Aaa wins"' in out
-    assert 'BUY NO "Player Aaa wins"' in out
+    assert 'Back Player Aaa to win → buy YES on "P. Aaa wins"' in out
+    assert 'Back Player Bbb to win → buy NO on "P. Aaa wins"' in out
     assert "2 alert(s) · 5 skipped (no_edge: 5)" in out
 
 

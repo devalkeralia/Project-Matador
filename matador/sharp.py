@@ -173,6 +173,48 @@ def _p_market_player(prices: dict, market_player_key: str) -> float | None:
     return devig_shin(o_mp, o_opp)
 
 
+def _match_event(events, market_player, opponent, occurrence_datetime):
+    """PURE. The sharp event for this exact PAIR of players, or None.
+
+    Full-PAIR name match (mirrors client.resolve_match's set idiom). Shared by the fair-prob and
+    start-time lookups so both agree on WHICH event is this match."""
+    if not market_player or not opponent or "/" in market_player or "/" in opponent:
+        return None  # need both singles names
+    want = {surname_key(canonical_key(market_player)), surname_key(canonical_key(opponent))}
+    if len(want) != 2:
+        return None  # the pair collapses to one key -> can't disambiguate
+    cands = [e for e in events
+             if {surname_key(canonical_key(e.get("home_team") or "")),   # `or ""` -> a JSON-null team can't TypeError the scan
+                 surname_key(canonical_key(e.get("away_team") or ""))} == want]
+    if not cands:
+        return None
+    if len(cands) > 1:  # essentially never for a full-pair match; tiebreak on nearest start
+        target = _parse_dt(occurrence_datetime)
+        if target is None:
+            return None
+        cands.sort(key=lambda e: abs(((_parse_dt(e.get("commence_time")) or target) - target).total_seconds()))
+    return cands[0]
+
+
+def sharp_commence_time(events, market_player, opponent, occurrence_datetime=None) -> str | None:
+    """PURE. The sharp book's scheduled start (ISO string) for this match, or None if not listed.
+
+    This is the REAL per-match start, and the reason it is worth a lookup: Kalshi's own
+    `occurrence_datetime` is frequently a coarse SESSION placeholder shared by a dozen matches and
+    left days stale. Measured live 2026-08-03 over the open Canadian Open books -- 52 markets matched
+    to a sharp event, ALL 52 start times disagreed, Kalshi resolving to 3-7 distinct stamps per tour
+    (up to 13 matches sharing one) against 12-15 minute-precise sharp stamps. Scheduling a
+    closing-line capture off the Kalshi stamp is what lost 19 of the first 40 captures.
+
+    NOT authoritative for whether a match has finished: the-odds-api drops an event once it is over,
+    so `None` means "not listed" (over, unmapped, or out of coverage), never "no start time"."""
+    event = _match_event(events, market_player, opponent, occurrence_datetime)
+    if event is None:
+        return None
+    iso = event.get("commence_time")
+    return iso if _parse_dt(iso) is not None else None
+
+
 def sharp_fair_prob(events, market_player, opponent, side, occurrence_datetime, *, consensus_fallback=True):
     """PURE. From a the-odds-api events list, the Shin-devigged fair probability of the TAKEN side
     winning, plus the source ('pinnacle' | 'consensus'), or (None, None) on any miss.
@@ -180,22 +222,10 @@ def sharp_fair_prob(events, market_player, opponent, side, occurrence_datetime, 
     Full-PAIR name match (mirrors client.resolve_match's set idiom); Pinnacle preferred, else the
     median of the other EU books (if consensus_fallback and >= 2 price it). `side` orients: the taken
     side is market_player when side=='yes', else the opponent."""
-    if not market_player or not opponent or "/" in market_player or "/" in opponent:
-        return None, None  # need both singles names
-    want = {surname_key(canonical_key(market_player)), surname_key(canonical_key(opponent))}
-    if len(want) != 2:
-        return None, None  # the pair collapses to one key -> can't disambiguate
-    cands = [e for e in events
-             if {surname_key(canonical_key(e.get("home_team") or "")),   # `or ""` -> a JSON-null team can't TypeError the scan
-                 surname_key(canonical_key(e.get("away_team") or ""))} == want]
-    if not cands:
+    event = _match_event(events, market_player, opponent, occurrence_datetime)
+    if event is None:
         return None, None
-    if len(cands) > 1:  # essentially never for a full-pair match; tiebreak on nearest start
-        target = _parse_dt(occurrence_datetime)
-        if target is None:
-            return None, None
-        cands.sort(key=lambda e: abs(((_parse_dt(e.get("commence_time")) or target) - target).total_seconds()))
-    books = {b.get("key"): b for b in cands[0].get("bookmakers", [])}
+    books = {b.get("key"): b for b in event.get("bookmakers", [])}
     mk = surname_key(canonical_key(market_player))
 
     p_mp, source = None, None
@@ -222,29 +252,52 @@ def sharp_fair_prob(events, market_player, opponent, side, occurrence_datetime, 
     return round(fair_taken, 4), source
 
 
+def _events_for_opp(client, opp, cache):
+    """The tournament's h2h events for this opp, or None when it isn't covered. `cache` (a dict)
+    memoizes fetch_h2h by sport_key across a batch, so one fetch serves every row AND both the
+    fair-prob and start-time lookups."""
+    key = sport_key(opp["tour"], opp["event"])
+    if key is None or not opp["opponent"]:
+        return None
+    if cache is not None and key in cache:
+        return cache[key]
+    try:
+        events = client.fetch_h2h(key)
+    except Exception:
+        if cache is not None:
+            cache[key] = []  # negative-cache: a failing sport_key must not re-run the retry ladder per row
+        raise
+    if cache is not None:
+        cache[key] = events
+    return events
+
+
 def sharp_fair_for_opp(client, opp, *, cache=None):
     """Glue: fetch + compute the sharp fair prob for a logged opportunity Row. Returns (prob, source)
     or (None, None). NEVER raises -- a sharp miss must not disturb the Kalshi closing-line capture.
-    `cache` (a dict) memoizes fetch_h2h by sport_key within a batch /close. Uses the client's
-    consensus_fallback setting."""
+    Uses the client's consensus_fallback setting."""
     try:
-        key = sport_key(opp["tour"], opp["event"])
-        opponent = opp["opponent"]
-        if key is None or not opponent:
+        events = _events_for_opp(client, opp, cache)
+        if events is None:
             return None, None
-        if cache is not None and key in cache:
-            events = cache[key]
-        else:
-            try:
-                events = client.fetch_h2h(key)
-            except Exception:
-                if cache is not None:
-                    cache[key] = []  # negative-cache: a failing sport_key must not re-run the retry ladder per row
-                raise
-            if cache is not None:
-                cache[key] = events
-        return sharp_fair_prob(events, opp["market_player"], opponent, opp["side"],
+        return sharp_fair_prob(events, opp["market_player"], opp["opponent"], opp["side"],
                                opp["occurrence_datetime"], consensus_fallback=client.consensus_fallback)
     except Exception:
         log.warning("sharp fair-prob failed for opp %s", opp["market_ticker"], exc_info=True)
         return None, None
+
+
+def sharp_start_for_opp(client, opp, *, cache=None) -> str | None:
+    """Glue: the sharp book's REAL scheduled start for a logged opportunity Row, or None. NEVER
+    raises -- an unavailable start must leave the stored one alone, never blow up a capture.
+
+    Shares `cache` with sharp_fair_for_opp, so asking for both costs one fetch (see
+    sharp_commence_time for why the Kalshi stamp isn't good enough)."""
+    try:
+        events = _events_for_opp(client, opp, cache)
+        if events is None:
+            return None
+        return sharp_commence_time(events, opp["market_player"], opp["opponent"], opp["occurrence_datetime"])
+    except Exception:
+        log.warning("sharp start lookup failed for opp %s", opp["market_ticker"], exc_info=True)
+        return None
